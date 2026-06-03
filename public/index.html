@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Mini VTT - Palette</title>
+<title>Mini VTT - Rooms Speed v3</title>
 <style>
   html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, sans-serif; background:#202020; color:#eee; }
   #app { height:100%; position:relative; }
@@ -27,11 +27,12 @@
   .tiny { font-size:11px; color:#aaa; }
   .master-only.hidden, .player-only.hidden { display:none !important; }
 
-  #roleOverlay { position:fixed; inset:0; z-index:30; background:rgba(0,0,0,.78); display:flex; align-items:center; justify-content:center; }
-  #roleBox { width:min(460px,92vw); background:#151515; border:1px solid #444; border-radius:14px; padding:22px; box-shadow:0 20px 70px #000; }
-  #roleBox h1 { font-size:24px; margin:0 0 12px; }
-  #roleBox p { color:#bbb; line-height:1.4; }
-  #roleBox .row { margin-top:16px; }
+  #roomOverlay, #roleOverlay { position:fixed; inset:0; z-index:30; background:rgba(0,0,0,.78); display:flex; align-items:center; justify-content:center; }
+  #roomBox, #roleBox { width:min(460px,92vw); background:#151515; border:1px solid #444; border-radius:14px; padding:22px; box-shadow:0 20px 70px #000; }
+  #roomBox h1, #roleBox h1 { font-size:24px; margin:0 0 12px; }
+  #roomBox p, #roleBox p { color:#bbb; line-height:1.4; }
+  #roomBox .row, #roleBox .row { margin-top:16px; }
+  #roleOverlay { display:none; }
 
   #paletteRoot { position:fixed; left:14px; top:14px; z-index:20; display:flex; gap:10px; align-items:flex-start; pointer-events:none; }
   #toolRail, #toolPanel, #statusPill { pointer-events:auto; }
@@ -55,9 +56,25 @@
 </style>
 </head>
 <body>
-<div id="roleOverlay">
+
+<div id="roomOverlay">
+  <div id="roomBox">
+    <span class="badge">Mini VTT ROOMS SPEED v4</span>
+    <h1>Scegli la stanza</h1>
+    <p>Usa lo stesso nome stanza su Master e Player. Ogni stanza è indipendente: tu e il tuo amico non vi pestate i piedi.</p>
+    <label>Nome stanza / campagna</label>
+    <input id="roomName" type="text" value="barovia" autocomplete="off">
+    <div class="row">
+      <button id="randomRoom">Genera stanza</button>
+      <button id="joinRoom">Entra nella stanza</button>
+    </div>
+    <small id="roomHint">Esempio URL: ?room=barovia</small>
+  </div>
+</div>
+
+<div id="roleOverlay" style="display:none">
   <div id="roleBox">
-    <span class="badge">Mini VTT v3 - Palette strumenti</span>
+    <span class="badge">Mini VTT ROOMS SPEED v4</span>
     <h1>Come vuoi entrare?</h1>
     <p><b>Master</b>: carica e sistema mappa/griglia, locka, rivela o oscura la foschia, crea e muove tutte le pedine.<br><b>Player</b>: vede la mappa, può spostarsi, zoomare e muovere solo le pedine PG.</p>
     <div class="row">
@@ -92,6 +109,7 @@
       <section class="panel master-only active" data-panel-content="map">
         <h2>🗺️ Mappa</h2>
         <input id="file" type="file" accept="image/*">
+        <small id="mapInfo">Auto-resize attivo: immagini oltre 1500 px lato lungo vengono ridotte e convertite in JPG.</small>
         <div class="row panelSection">
           <button id="mapMode">Setup mappa</button>
           <button id="lockMap">Lock mappa</button>
@@ -189,9 +207,9 @@
       </section>
 
       <section class="panel" data-panel-content="sync">
-        <h2>🔁 Sync locale</h2>
+        <h2>🔁 Sync online / room</h2>
         <div class="note">
-          <small><b>Test semplice:</b> apri questo stesso HTML in due tab dello stesso browser. Uno Master, uno Player. Il Player riceve automaticamente mappa, griglia, fog e pedine.</small>
+          <small><b>Realtime:</b> Master e Player devono entrare nella stessa stanza. Stanze diverse sono completamente indipendenti.</small>
         </div>
       </section>
     </aside>
@@ -200,15 +218,16 @@
   <div id="statusPill">Ruolo: <span id="roleLabelTop" class="badge">---</span></div>
   <div id="bottomHint">Trascina vuoto = pan · pinch/rotella = zoom</div>
 </div>
+<script src="/socket.io/socket.io.js"></script>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha:false });
 const fogView = document.createElement('canvas');
 const fogCtx = fogView.getContext('2d');
-const channel = 'BroadcastChannel' in window ? new BroadcastChannel('mini-vtt-sync') : null;
+const socket = io({ transports: ['websocket', 'polling'] });
 
 let W=0,H=0,dpr=1;
-let img=null, imgSrc=null, role=null;
+let img=null, imgSrc=null, role=null, currentRoom=null;
 let map={x:100,y:80,scale:1,locked:false};
 let grid={x:0,y:0,size:50,opacity:.6,color:'rgba(0,0,0,1)',locked:false};
 let view={x:0,y:0,scale:1};
@@ -262,6 +281,49 @@ function updateUndoRedo(){
 }
 function markChange(fn){ const before=cloneCore(); fn(); commitHistory(before); }
 
+
+function makeRoomCode(){
+  return 'room-' + Math.random().toString(36).slice(2,8);
+}
+function normalizeRoomName(v){
+  return String(v || 'default').trim().toLowerCase().replace(/[^a-z0-9_-]/g,'-').replace(/-+/g,'-').slice(0,40) || 'default';
+}
+function enterRoomUi(room){
+  currentRoom = room;
+  $('roomOverlay').style.display='none';
+  $('roleOverlay').style.display='flex';
+  const url = new URL(window.location.href);
+  url.searchParams.set('room', currentRoom);
+  history.replaceState(null, '', url.toString());
+  $('roomHint').textContent = 'Stanza attiva: ' + currentRoom;
+  if(role === 'player') requestSync();
+  if(role === 'master') sendState(true);
+}
+function joinRoom(){
+  const room = normalizeRoomName($('roomName').value);
+  $('roomHint').textContent = 'Connessione alla stanza "' + room + '"...';
+  if(!socket.connected){
+    $('roomHint').textContent = 'Socket non ancora connesso, riprovo...';
+    socket.once('connect', () => joinRoom());
+    return;
+  }
+  socket.timeout(4000).emit('room:join', room, (err, res)=>{
+    if(err){
+      $('roomHint').textContent = 'Errore: server non risponde. Ricarica o controlla Render/log.';
+      return;
+    }
+    enterRoomUi(res?.room || room);
+  });
+}
+$('randomRoom').onclick=()=>{ $('roomName').value = makeRoomCode(); };
+$('joinRoom').onclick=joinRoom;
+$('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); });
+(function initRoomFromUrl(){
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room');
+  if(room) $('roomName').value = normalizeRoomName(room);
+})();
+
 function setRole(nextRole){
   role = nextRole;
   $('roleOverlay').style.display='none';
@@ -274,7 +336,7 @@ function setRole(nextRole){
   $('hintText').textContent = role === 'player' ? 'Modalità Player: puoi muoverti, zoomare e trascinare solo le pedine PG.' : 'Trascina vuoto = pan. Pinch/rotella = zoom. Il Player in un altro tab riceve gli aggiornamenti.';
   requestDraw();
   showPanel(role === 'player' ? 'view' : 'map');
-  if(role === 'player') requestSync(); else sendState(true);
+  if(currentRoom){ if(role === 'player') requestSync(); else sendState(true); }
 }
 $('chooseMaster').onclick=()=>setRole('master');
 $('choosePlayer').onclick=()=>setRole('player');
@@ -542,7 +604,51 @@ canvas.addEventListener('wheel', e=>{
   view.x=mx-before.x*view.scale; view.y=my-before.y*view.scale; requestDraw();
 },{passive:false});
 
-$('file').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const reader=new FileReader(); reader.onload=()=>{ loadImage(reader.result); sendState(true); }; reader.readAsDataURL(f); };
+async function imageFileToResizedDataUrl(file, maxSide=1500){
+  const originalUrl = await new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=reject;
+    reader.onload=()=>resolve(reader.result);
+    reader.readAsDataURL(file);
+  });
+  const source = await new Promise((resolve,reject)=>{
+    const im=new Image();
+    im.onload=()=>resolve(im);
+    im.onerror=reject;
+    im.src=originalUrl;
+  });
+  const longSide = Math.max(source.width, source.height);
+  const info = $('mapInfo');
+  if(longSide <= maxSide){
+    if(info) info.textContent = `Mappa caricata senza resize: ${source.width}×${source.height}px.`;
+    return originalUrl;
+  }
+  const scale = maxSide / longSide;
+  const w = Math.round(source.width * scale);
+  const h = Math.round(source.height * scale);
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const octx = off.getContext('2d');
+  octx.fillStyle = '#ffffff';
+  octx.fillRect(0,0,w,h);
+  octx.imageSmoothingEnabled = true;
+  octx.imageSmoothingQuality = 'high';
+  octx.drawImage(source,0,0,w,h);
+  const out = off.toDataURL('image/jpeg', 0.86);
+  const info = $('mapInfo');
+  if(info) info.textContent = `Mappa ridimensionata automaticamente: ${source.width}×${source.height}px → ${w}×${h}px.`;
+  return out;
+}
+$('file').onchange=async e=>{
+  const f=e.target.files[0]; if(!f)return;
+  try{
+    const dataUrl = await imageFileToResizedDataUrl(f, 1500);
+    loadImage(dataUrl);
+    sendState(true);
+  }catch(err){
+    alert('Errore caricamento immagine: ' + err.message);
+  }
+};
 $('mapMode').onclick=()=>{ if(map.locked){ map.locked=false; $('lockMap').textContent='Lock mappa'; } setMode('map'); };
 $('gridMode').onclick=()=>setMode('grid');
 $('navMode').onclick=()=>setMode('nav');
@@ -592,16 +698,13 @@ document.querySelectorAll('button[data-step]').forEach(btn=>btn.onclick=()=>{
 
 function getState(includeImage=false){ return {type:'state', sender:role, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, tokens}; }
 function sendState(includeImage=false){
+  if(!currentRoom) return;
   if(role !== 'master' && role !== 'player') return;
   const state = role === 'player' ? {type:'state', sender:'player', tokens} : getState(includeImage);
-  if(channel) channel.postMessage(state);
-  try{ localStorage.setItem('mini-vtt-state', JSON.stringify(state)); }catch(e){}
+  socket.emit('state:update', state);
 }
-function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),250); }
-function requestSync(){
-  if(channel) channel.postMessage({type:'request'});
-  try{ const saved=JSON.parse(localStorage.getItem('mini-vtt-state')||'null'); if(saved) applyState(saved); }catch(e){}
-}
+function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
+function requestSync(){ if(currentRoom) socket.emit('state:request'); }
 function applyState(s){
   if(!s) return;
   if(role === 'master' && s.sender === 'player'){
@@ -610,15 +713,22 @@ function applyState(s){
     return;
   }
   if(role !== 'player' || s.sender === 'player') return;
-  map=s.map||map; grid=s.grid||grid; if(s.fogState) fogState=s.fogState; if(Array.isArray(s.tokens)) tokens=s.tokens;
+  map=s.map||map;
+  grid=s.grid||grid;
+  if(s.fogState) fogState=s.fogState;
+  if(Array.isArray(s.tokens)) tokens=s.tokens;
   if(s.imgSrc && s.imgSrc!==imgSrc) loadImage(s.imgSrc);
   syncInputs(); requestDraw();
 }
-if(channel){
-  channel.onmessage=e=>{ if(e.data?.type==='request' && role==='master') sendState(true); if(e.data?.type==='state') applyState(e.data); };
-}
-window.addEventListener('storage', e=>{ if(e.key==='mini-vtt-state' && e.newValue) applyState(JSON.parse(e.newValue)); });
-
+socket.on('connect', () => {
+  if(currentRoom){
+    socket.emit('room:join', currentRoom, () => {
+      if(role === 'player') requestSync();
+      if(role === 'master') sendState(true);
+    });
+  }
+});
+socket.on('state:update', state => applyState(state));
 
 $('undoBtn').onclick=undo;
 $('redoBtn').onclick=redo;
