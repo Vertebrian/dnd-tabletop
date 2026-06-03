@@ -59,7 +59,7 @@
 
 <div id="roomOverlay">
   <div id="roomBox">
-    <span class="badge">Mini VTT ROOMS SPEED v4</span>
+    <span class="badge">Mini VTT ROOMS SPEED v5</span>
     <h1>Scegli la stanza</h1>
     <p>Usa lo stesso nome stanza su Master e Player. Ogni stanza è indipendente: tu e il tuo amico non vi pestate i piedi.</p>
     <label>Nome stanza / campagna</label>
@@ -74,7 +74,7 @@
 
 <div id="roleOverlay" style="display:none">
   <div id="roleBox">
-    <span class="badge">Mini VTT ROOMS SPEED v4</span>
+    <span class="badge">Mini VTT ROOMS SPEED v5</span>
     <h1>Come vuoi entrare?</h1>
     <p><b>Master</b>: carica e sistema mappa/griglia, locka, rivela o oscura la foschia, crea e muove tutte le pedine.<br><b>Player</b>: vede la mappa, può spostarsi, zoomare e muovere solo le pedine PG.</p>
     <div class="row">
@@ -294,7 +294,7 @@ function enterRoomUi(room){
   $('roleOverlay').style.display='flex';
   const url = new URL(window.location.href);
   url.searchParams.set('room', currentRoom);
-  history.replaceState(null, '', url.toString());
+  window.history.replaceState(null, '', url.toString());
   $('roomHint').textContent = 'Stanza attiva: ' + currentRoom;
   if(role === 'player') requestSync();
   if(role === 'master') sendState(true);
