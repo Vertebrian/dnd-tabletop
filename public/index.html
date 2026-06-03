@@ -200,13 +200,12 @@
   <div id="statusPill">Ruolo: <span id="roleLabelTop" class="badge">---</span></div>
   <div id="bottomHint">Trascina vuoto = pan · pinch/rotella = zoom</div>
 </div>
-<script src="/socket.io/socket.io.js"></script>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha:false });
 const fogView = document.createElement('canvas');
 const fogCtx = fogView.getContext('2d');
-const socket = io();
+const channel = 'BroadcastChannel' in window ? new BroadcastChannel('mini-vtt-sync') : null;
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null;
@@ -595,11 +594,13 @@ function getState(includeImage=false){ return {type:'state', sender:role, imgSrc
 function sendState(includeImage=false){
   if(role !== 'master' && role !== 'player') return;
   const state = role === 'player' ? {type:'state', sender:'player', tokens} : getState(includeImage);
-  socket.emit('state:update', state);
+  if(channel) channel.postMessage(state);
+  try{ localStorage.setItem('mini-vtt-state', JSON.stringify(state)); }catch(e){}
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),250); }
 function requestSync(){
-  socket.emit('state:request');
+  if(channel) channel.postMessage({type:'request'});
+  try{ const saved=JSON.parse(localStorage.getItem('mini-vtt-state')||'null'); if(saved) applyState(saved); }catch(e){}
 }
 function applyState(s){
   if(!s) return;
@@ -613,11 +614,10 @@ function applyState(s){
   if(s.imgSrc && s.imgSrc!==imgSrc) loadImage(s.imgSrc);
   syncInputs(); requestDraw();
 }
-socket.on('state:update', state => applyState(state));
-socket.on('connect', () => {
-  if(role === 'player') requestSync();
-  if(role === 'master') sendState(true);
-});
+if(channel){
+  channel.onmessage=e=>{ if(e.data?.type==='request' && role==='master') sendState(true); if(e.data?.type==='state') applyState(e.data); };
+}
+window.addEventListener('storage', e=>{ if(e.key==='mini-vtt-state' && e.newValue) applyState(JSON.parse(e.newValue)); });
 
 
 $('undoBtn').onclick=undo;
