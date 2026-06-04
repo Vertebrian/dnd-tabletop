@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Mini VTT - Rooms Speed v3</title>
+<title>D&D TableTop</title>
 <style>
   html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, sans-serif; background:#202020; color:#eee; }
   #app { height:100%; position:relative; }
@@ -16,7 +16,7 @@
   input[type="number"], input[type="text"], select { width:100%; padding:7px; background:#1e1e1e; color:#eee; border:1px solid #555; border-radius:7px; }
   label { display:block; font-size:12px; color:#bbb; margin-top:10px; }
   h1 { font-size:16px; margin:0; }
-  h2 { font-size:14px; margin:0 0 10px; color:#ddd; }
+  h2 { font-size:22px; margin:0 0 14px; color:#f0f0f0; letter-spacing:.2px; }
   small { color:#999; display:block; line-height:1.35; margin-top:10px; }
   .badge { display:inline-block; padding:3px 8px; border:1px solid #555; border-radius:999px; color:#ccc; font-size:12px; }
   .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
@@ -37,17 +37,35 @@
   #paletteRoot { position:fixed; left:14px; top:14px; z-index:20; display:flex; gap:10px; align-items:flex-start; pointer-events:none; }
   #toolRail, #toolPanel, #statusPill { pointer-events:auto; }
   #toolRail { width:52px; background:rgba(16,16,16,.92); border:1px solid #3b3b3b; border-radius:16px; padding:8px; box-shadow:0 10px 30px rgba(0,0,0,.35); backdrop-filter: blur(8px); }
-  .railBtn { width:100%; height:42px; padding:0; margin:4px 0; font-size:20px; display:flex; align-items:center; justify-content:center; }
+  .railBtn { width:100%; height:42px; padding:0; margin:4px 0; font-size:20px; display:flex; align-items:center; justify-content:center; position:relative; transition:transform .15s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease; }
+  .railBtn:hover { transform:translateY(-1px); }
   .railBtn span { display:none; }
+  .railSeparator { height:1px; margin:8px 4px; background:#333; }
+  #navUnlockBtn.nav-free { background:#263b2b; border-color:#5aa66a; }
+  #navUnlockBtn.nav-locked { background:#57362f; border-color:#d08355; box-shadow:0 0 0 2px rgba(208,131,85,.22), 0 0 18px rgba(208,131,85,.22); animation:navPulse 1.15s ease-in-out infinite; }
+  #navUnlockBtn.nav-locked::after { content:'×'; position:absolute; right:6px; top:3px; width:15px; height:15px; border-radius:50%; background:#b54a3d; color:#fff; font-size:12px; line-height:14px; font-weight:800; }
+  #resetViewRail { font-size:18px; }
+  @keyframes navPulse { 0%,100%{ transform:scale(1); } 50%{ transform:scale(1.07); } }
+  .modeChip { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); background:rgba(0,0,0,.62); border:1px solid rgba(255,255,255,.20); padding:7px 12px; border-radius:999px; font-size:12px; color:#ddd; pointer-events:none; box-shadow:0 8px 24px rgba(0,0,0,.28); }
+  .modeChip.busy { border-color:rgba(208,131,85,.65); color:#ffd7ba; }
   #togglePanel { font-size:18px; }
   #toolPanel { width:310px; max-height:calc(100vh - 28px); overflow:auto; background:rgba(17,17,17,.95); border:1px solid #3b3b3b; border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,.45); padding:14px; backdrop-filter: blur(10px); }
   #toolPanel.collapsed { display:none; }
   .panelHead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  #panelTitle { font-size:22px; margin:0; color:#f0f0f0; letter-spacing:.2px; }
+  #mapInfo { display:block; margin-top:12px; padding:9px 10px; border:1px solid #333; border-radius:10px; background:rgba(255,255,255,.045); color:#bdbdbd; }
+  .quickRow { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+  .quickRow button { padding:6px 8px; font-size:12px; }
+  .sceneList { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+  .sceneBtn { text-align:left; padding:9px 10px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .sceneBtn.active { background:#355735 !important; border-color:#6aa66a !important; }
+  .fileLine { margin-top:8px; }
+  .wideBtn { width:100%; margin-top:8px; }
   .panel { display:none; }
   .panel.active { display:block; }
   .panelSection { padding-top:12px; margin-top:12px; border-top:1px solid #2d2d2d; }
   #statusPill { position:fixed; right:14px; top:14px; padding:8px 10px; border-radius:999px; border:1px solid #444; background:rgba(17,17,17,.85); box-shadow:0 8px 25px rgba(0,0,0,.35); }
-  #bottomHint { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.18); padding:7px 12px; border-radius:999px; font-size:12px; color:#ddd; pointer-events:none; }
+  #bottomHint { }
 
   @media (max-width: 720px) {
     #toolPanel { width:min(310px, calc(100vw - 96px)); }
@@ -59,7 +77,7 @@
 
 <div id="roomOverlay">
   <div id="roomBox">
-    <span class="badge">Mini VTT ROOMS SPEED v5</span>
+    <span class="badge">D&D TableTop</span>
     <h1>Scegli la stanza</h1>
     <p>Usa lo stesso nome stanza su Master e Player. Ogni stanza è indipendente: tu e il tuo amico non vi pestate i piedi.</p>
     <label>Nome stanza / campagna</label>
@@ -74,7 +92,7 @@
 
 <div id="roleOverlay" style="display:none">
   <div id="roleBox">
-    <span class="badge">Mini VTT ROOMS SPEED v5</span>
+    <span class="badge">D&D TableTop</span>
     <h1>Come vuoi entrare?</h1>
     <p><b>Master</b>: carica e sistema mappa/griglia, locka, rivela o oscura la foschia, crea e muove tutte le pedine.<br><b>Player</b>: vede la mappa, può spostarsi, zoomare e muovere solo le pedine PG.</p>
     <div class="row">
@@ -96,23 +114,25 @@
       <button class="railBtn tool-tab master-only" data-panel="tokens" title="Pedine">👤</button>
       <button id="undoBtn" class="railBtn" title="Undo / Ctrl+Z">↶</button>
       <button id="redoBtn" class="railBtn" title="Redo / Ctrl+Y">↷</button>
-      <button class="railBtn tool-tab" data-panel="view" title="Vista">🔎</button>
-      <button class="railBtn tool-tab" data-panel="sync" title="Sync">🔁</button>
+      <div class="railSeparator"></div>
+      <button id="navUnlockBtn" class="railBtn nav-free" title="Naviga / sblocca movimento schermata">✋</button>
+      <button id="resetViewRail" class="railBtn" title="Reset vista">👁️</button>
+      <button class="railBtn tool-tab" data-panel="save" title="Salva / Carica">💾</button>
     </div>
 
     <aside id="toolPanel">
       <div class="panelHead">
-        <h1>Mini VTT <span id="roleLabel" class="badge">---</span></h1>
+        <h1 id="panelTitle">Mappa</h1>
         <button id="closePanel" style="width:auto;padding:6px 9px">×</button>
       </div>
 
       <section class="panel master-only active" data-panel-content="map">
-        <h2>🗺️ Mappa</h2>
+      
         <input id="file" type="file" accept="image/*">
         <small id="mapInfo">Auto-resize attivo: immagini oltre 1500 px lato lungo vengono ridotte e convertite in JPG.</small>
         <div class="row panelSection">
           <button id="mapMode">Setup mappa</button>
-          <button id="lockMap">Lock mappa</button>
+        
         </div>
         <label>Scala mappa (%)</label>
         <div class="triple">
@@ -121,14 +141,34 @@
           <button data-step="mapScale" data-dir="1">+</button>
         </div>
         <small>Di solito puoi lasciarla a 100%. Serve solo se l'immagine caricata è troppo grande/piccola rispetto al foglio.</small>
+
+ <label>Scena attiva</label>
+        <select id="sceneSelect"></select>
+        <button id="switchScene" class="wideBtn">Apri scena selezionata</button>
+
+        <div class="panelSection">
+          <label>Nuova scena</label>
+          <input id="newSceneName" type="text" value="Nuova scena" autocomplete="off">
+          <button id="addScene" class="wideBtn">➕ Crea scena vuota</button>
+          <button id="duplicateScene" class="wideBtn">📋 Duplica scena attuale</button>
+        </div>
+
+        <div class="panelSection">
+          <button id="copyTokensToScene" class="wideBtn">🚶 Porta pedine qui</button>
+          <small>Copia nella scena attiva le pedine dell'ultima scena visitata. Utile quando il party sale/scende piano.</small>
+        </div>
+
+        <div class="panelSection">
+          <button id="deleteScene" class="warn wideBtn">Elimina scena attiva</button>
+        </div>
+        <div id="sceneList" class="sceneList"></div>
       </section>
 
       <section class="panel master-only" data-panel-content="grid">
-        <h2># Griglia</h2>
+      
         <div class="row">
           <button id="gridMode">Muovi griglia</button>
-          <button id="lockGrid">Lock griglia</button>
-        </div>
+          </div>
         <label>Dimensione casella (px)</label>
         <div class="triple">
           <button data-step="gridSize" data-dir="-1">-</button>
@@ -138,19 +178,24 @@
         <label>Opacità griglia (%)</label>
         <div class="triple">
           <button data-step="gridOpacity" data-dir="-1">-</button>
-          <input id="gridOpacity" type="number" min="0" max="100" step="1" value="60">
+          <input id="gridOpacity" type="number" min="0" max="100" step="1" value="100">
           <button data-step="gridOpacity" data-dir="1">+</button>
+        </div>
+        <div class="quickRow">
+          <button data-set="gridOpacity" data-value="75">75%</button>
+          <button data-set="gridOpacity" data-value="50">50%</button>
+          <button data-set="gridOpacity" data-value="20">20%</button>
         </div>
         <label>Colore griglia</label>
         <select id="gridColor">
           <option value="rgba(0,0,0,1)">Nero</option>
           <option value="rgba(255,255,255,1)">Bianco</option>
-          <option value="rgba(80,120,255,1)">Blu</option>
+          <option value="rgba(210,60,60,1)">Rosso</option>
         </select>
       </section>
 
       <section class="panel master-only" data-panel-content="fog">
-        <h2>🌫️ Nebbia</h2>
+       
         <div class="row">
           <button id="fogBrush" class="on">🖌️ Pennello</button>
           <button id="fogRect">▭ Rettangolo</button>
@@ -158,8 +203,13 @@
         <label>Pennello (px)</label>
         <div class="triple">
           <button data-step="brush" data-dir="-1">-</button>
-          <input id="brush" type="number" min="2" max="1000" step="1" value="80">
+          <input id="brush" type="number" min="2" max="1000" step="1" value="50">
           <button data-step="brush" data-dir="1">+</button>
+        </div>
+        <div class="quickRow">
+          <button data-set="brush" data-value="25">25</button>
+          <button data-set="brush" data-value="75">75</button>
+          <button data-set="brush" data-value="100">100</button>
         </div>
         <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
           <input id="rectSnap" type="checkbox" checked style="width:auto"> Snap rettangolo alla griglia
@@ -172,8 +222,7 @@
       </section>
 
       <section class="panel master-only" data-panel-content="tokens">
-        <h2>👤 Pedine</h2>
-        <div class="note tiny"><b>PG:</b> muovibili anche dal Player. <b>PNG:</b> solo Master.</div>
+      
         <label>Nome / etichetta</label>
         <input id="tokenLabel" type="text" value="PG">
         <label>Tipo</label>
@@ -192,31 +241,26 @@
           </div>
         </div>
         <div class="panelSection">
-          <button id="tokensMode" style="width:100%;margin-bottom:8px">Modalità pedine</button>
           <button id="addToken" style="width:100%">Crea pedina</button>
         </div>
         <button id="deleteToken" class="warn" style="width:100%;margin-top:8px">Elimina selezionata</button>
         <small>Le pedine si agganciano sempre al centro delle caselle.</small>
       </section>
 
-      <section class="panel" data-panel-content="view">
-        <h2>🔎 Vista</h2>
-        <button id="navMode" class="on" style="width:100%">Naviga</button>
-        <button id="resetView" style="width:100%;margin-top:8px">Reset vista</button>
-        <small id="hintText">Trascina vuoto = pan. Pinch/rotella = zoom.</small>
+
+      <section class="panel" data-panel-content="save">
+        <button id="exportCampaign" class="wideBtn">⬇️ Salva campagna su file</button>
+        <label class="fileLine">Carica campagna da file</label>
+        <input id="importCampaign" type="file" accept="application/json,.json">
+        <small>Il salvataggio crea un file JSON con scene, mappe, griglie, nebbia e pedine. Conservalo tu: il server continua a tenere tutto solo in memoria.</small>
       </section>
 
-      <section class="panel" data-panel-content="sync">
-        <h2>🔁 Sync online / room</h2>
-        <div class="note">
-          <small><b>Realtime:</b> Master e Player devono entrare nella stessa stanza. Stanze diverse sono completamente indipendenti.</small>
-        </div>
-      </section>
+
     </aside>
   </div>
 
   <div id="statusPill">Ruolo: <span id="roleLabelTop" class="badge">---</span></div>
-  <div id="bottomHint">Trascina vuoto = pan · pinch/rotella = zoom</div>
+  <div id="bottomHint" class="modeChip">✋ Navigazione libera · trascina per muovere la schermata</div>
 </div>
 <script src="/socket.io/socket.io.js"></script>
 <script>
@@ -228,12 +272,14 @@ const socket = io({ transports: ['websocket', 'polling'] });
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
+let currentSceneId='scene-1', lastSceneId=null;
+let scenes={};
 let map={x:100,y:80,scale:1,locked:false};
-let grid={x:0,y:0,size:50,opacity:.6,color:'rgba(0,0,0,1)',locked:false};
+let grid={x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
 let view={x:0,y:0,scale:1};
 let mode='nav';
 let dragging=false, draggingToken=false, last={x:0,y:0};
-let fogTool='brush', brush=80;
+let fogTool='brush', brush=50;
 let rectStart=null, rectPreview=null;
 let tokens=[];
 let selectedTokenId=null;
@@ -281,6 +327,99 @@ function updateUndoRedo(){
 }
 function markChange(fn){ const before=cloneCore(); fn(); commitHistory(before); }
 
+function defaultScene(name='Scena 1'){
+  return {
+    id:'scene-'+Date.now()+Math.random().toString(16).slice(2),
+    name,
+    imgSrc:null,
+    map:{x:100,y:80,scale:1,locked:false},
+    grid:{x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false},
+    fogState:{base:'dark', strokes:[]},
+    tokens:[]
+  };
+}
+function ensureScenes(){
+  if(!scenes || typeof scenes !== 'object') scenes={};
+  if(!scenes[currentSceneId]){
+    scenes[currentSceneId]={id:currentSceneId, name:'Scena 1', imgSrc, map, grid, fogState, tokens};
+  }
+}
+function captureCurrentScene(){
+  ensureScenes();
+  scenes[currentSceneId]={...(scenes[currentSceneId]||{}), id:currentSceneId, imgSrc, map, grid, fogState, tokens};
+}
+function applyScene(sceneId){
+  ensureScenes();
+  const sc=scenes[sceneId];
+  if(!sc) return;
+  currentSceneId=sceneId;
+  imgSrc=sc.imgSrc || null;
+  img=null;
+  if(imgSrc) loadImage(imgSrc);
+  map=sc.map || {x:100,y:80,scale:1,locked:false};
+  grid=sc.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
+  fogState=sc.fogState || {base:'dark', strokes:[]};
+  tokens=Array.isArray(sc.tokens) ? sc.tokens : [];
+  selectedTokenId=null;
+  syncInputs(); renderScenesUi(); requestDraw();
+}
+function renderScenesUi(){
+  const sel=$('sceneSelect'), list=$('sceneList');
+  if(!sel || !list) return;
+  ensureScenes();
+  const entries=Object.values(scenes);
+  sel.innerHTML='';
+  for(const sc of entries){
+    const opt=document.createElement('option'); opt.value=sc.id; opt.textContent=sc.name || sc.id; opt.selected=sc.id===currentSceneId; sel.appendChild(opt);
+  }
+  list.innerHTML='';
+  for(const sc of entries){
+    const b=document.createElement('button');
+    b.className='sceneBtn'+(sc.id===currentSceneId?' active':'');
+    b.innerHTML='<span>'+escapeHtml(sc.name || sc.id)+'</span><small>'+(sc.id===currentSceneId?'attiva':'apri')+'</small>';
+    b.onclick=()=>switchScene(sc.id);
+    list.appendChild(b);
+  }
+}
+function escapeHtml(v){ return String(v).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function switchScene(sceneId){
+  if(sceneId===currentSceneId) return;
+  captureCurrentScene();
+  lastSceneId=currentSceneId;
+  applyScene(sceneId);
+  if(role==='master') sendState(true);
+}
+function makeCampaignPayload(){
+  captureCurrentScene();
+  return {version:2, exportedAt:new Date().toISOString(), currentSceneId, scenes};
+}
+function loadCampaignPayload(payload){
+  if(!payload) return;
+  if(payload.scenes){
+    scenes=payload.scenes;
+    currentSceneId=payload.currentSceneId || Object.keys(scenes)[0] || 'scene-1';
+  } else {
+    currentSceneId='scene-1';
+    scenes={ [currentSceneId]:{id:currentSceneId,name:'Scena 1',imgSrc:payload.imgSrc||null,map:payload.map,grid:payload.grid,fogState:payload.fogState,tokens:payload.tokens||[]} };
+  }
+  applyScene(currentSceneId);
+  if(role==='master') sendState(true);
+}
+function exportCampaign(){
+  const payload=makeCampaignPayload();
+  const blob=new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=(currentRoom || 'campagna')+'-dd-tabletop.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+async function importCampaignFile(file){
+  const text=await file.text();
+  loadCampaignPayload(JSON.parse(text));
+}
+
+
 
 function makeRoomCode(){
   return 'room-' + Math.random().toString(36).slice(2,8);
@@ -327,15 +466,15 @@ $('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); }
 function setRole(nextRole){
   role = nextRole;
   $('roleOverlay').style.display='none';
-  $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
+  if($('roleLabel')) $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
   $('roleLabelTop').textContent = role === 'master' ? 'Master' : 'Player';
   document.querySelectorAll('.master-only').forEach(el=>el.classList.toggle('hidden', role !== 'master'));
   setMode('nav');
   if(role==='master' && historyIndex<0) pushHistory();
   updateUndoRedo();
-  $('hintText').textContent = role === 'player' ? 'Modalità Player: puoi muoverti, zoomare e trascinare solo le pedine PG.' : 'Trascina vuoto = pan. Pinch/rotella = zoom. Il Player in un altro tab riceve gli aggiornamenti.';
+  updateNavUi();
   requestDraw();
-  showPanel(role === 'player' ? 'view' : 'map');
+  showPanel(role === 'player' ? 'save' : 'map');
   if(currentRoom){ if(role === 'player') requestSync(); else sendState(true); }
 }
 $('chooseMaster').onclick=()=>setRole('master');
@@ -429,7 +568,8 @@ function moveSelectedTokenFromEvent(e){
   const c=worldToGridCell(w.x,w.y);
   if(t.gx === c.gx && t.gy === c.gy) return true;
   t.gx=c.gx; t.gy=c.gy;
-  socket.emit('token:move', { id:t.id, gx:t.gx, gy:t.gy });
+  captureCurrentScene();
+  socket.emit('token:move', { sceneId:currentSceneId, id:t.id, gx:t.gx, gy:t.gy });
   requestDraw();
   return true;
 }
@@ -440,8 +580,9 @@ function drawFogOverlay(){
   fogCtx.globalCompositeOperation='source-over';
   fogCtx.clearRect(0,0,W,H);
 
-  // Player: nero pieno al 100%. Master: nero semi-trasparente per lavorare comodo.
-  const fogColor = role === 'master' ? 'rgba(0,0,0,.72)' : '#000000';
+  // La nebbia viene disegnata come maschera nera opaca e poi resa trasparente solo alla fine.
+  // Cosi rettangoli e pennello sovrapposti non creano strati sempre piu scuri.
+  const fogColor = '#000000';
 
   if(fogState.base === 'dark'){
     fogCtx.fillStyle = fogColor;
@@ -465,8 +606,9 @@ function drawFogOverlay(){
   fogCtx.globalAlpha = 1;
   fogCtx.globalCompositeOperation='source-over';
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = role === 'master' ? .72 : 1;
   ctx.drawImage(fogView,0,0,W,H);
+  ctx.globalAlpha = 1;
 
   if(role === 'master' && mode === 'fog' && fogTool === 'rect' && rectPreview){
     ctx.save();
@@ -491,11 +633,35 @@ function syncInputs(){
   $('brush').value = Math.round(brush);
 }
 
+function modeLabel(m){
+  if(m === 'map') return 'Setup mappa';
+  if(m === 'grid') return 'Muovi griglia';
+  if(m === 'fog') return fogTool === 'rect' ? 'Nebbia: rettangolo' : 'Nebbia: pennello';
+  if(m === 'tokens') return 'Pedine';
+  return 'Navigazione libera';
+}
+function updateNavUi(){
+  const nav=$('navUnlockBtn');
+  const hint=$('bottomHint');
+  if(!nav || !hint) return;
+  const busy = mode !== 'nav';
+  nav.classList.toggle('nav-locked', busy);
+  nav.classList.toggle('nav-free', !busy);
+  nav.textContent = busy ? '✋' : '🤚';
+  nav.title = busy ? 'Sei in modalità "' + modeLabel(mode) + '". Clicca qui per sbloccare e muovere la schermata.' : 'Navigazione libera: trascina il vuoto per muovere la schermata.';
+  hint.classList.toggle('busy', busy);
+  hint.textContent = busy ? ('🔒 ' + modeLabel(mode) + ' attivo · clicca ✋ per muovere la schermata') : '🤚 Navigazione libera · trascina per muovere la schermata';
+}
 function setMode(m){
   if(role === 'player') m='nav';
   mode=m;
   document.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
   const el=$(m+'Mode'); if(el) el.classList.add('on');
+  if(m === 'fog'){
+    if(fogTool === 'rect') $('fogRect')?.classList.add('on');
+    else $('fogBrush')?.classList.add('on');
+  }
+  updateNavUi();
 }
 
 function eventWorld(e){
@@ -645,27 +811,25 @@ $('file').onchange=async e=>{
   try{
     const dataUrl = await imageFileToResizedDataUrl(f, 1500);
     loadImage(dataUrl);
+    captureCurrentScene();
     sendState(true);
   }catch(err){
     alert('Errore caricamento immagine: ' + err.message);
   }
 };
-$('mapMode').onclick=()=>{ if(map.locked){ map.locked=false; $('lockMap').textContent='Lock mappa'; } setMode('map'); };
+
 $('gridMode').onclick=()=>setMode('grid');
-$('navMode').onclick=()=>setMode('nav');
-$('tokensMode').onclick=()=>setMode('tokens');
 $('addToken').onclick=()=>markChange(()=>{
   if(role !== 'master') return;
   const t={ id:'t'+Date.now()+Math.random().toString(16).slice(2), label:$('tokenLabel').value.trim() || 'Pedina', type:$('tokenType').value, w:clamp(+$('tokenW').value||1,1,20), h:clamp(+$('tokenH').value||1,1,20), gx:0, gy:0 };
   const center=screenToWorld(W/2,H/2); const c=worldToGridCell(center.x, center.y); t.gx=c.gx; t.gy=c.gy;
-  tokens.push(t); selectedTokenId=t.id; requestDraw(); sendState(false);
+  tokens.push(t); selectedTokenId=t.id; captureCurrentScene(); requestDraw(); sendState(false);
 });
 $('deleteToken').onclick=()=>markChange(()=>{
   if(role !== 'master' || !selectedTokenId) return;
-  tokens=tokens.filter(t=>t.id!==selectedTokenId); selectedTokenId=null; requestDraw(); sendState(false);
+  tokens=tokens.filter(t=>t.id!==selectedTokenId); selectedTokenId=null; captureCurrentScene(); requestDraw(); sendState(false);
 });
-$('lockMap').onclick=e=>markChange(()=>{ map.locked=!map.locked; e.target.textContent=map.locked?'Unlock mappa':'Lock mappa'; sendState(false); });
-$('lockGrid').onclick=e=>markChange(()=>{ grid.locked=!grid.locked; e.target.textContent=grid.locked?'Unlock griglia':'Lock griglia'; sendState(false); });
+
 $('gridColor').onchange=e=>markChange(()=>{ grid.color=e.target.value; requestDraw(); sendState(false); });
 $('fogBrush').onclick=()=>{ fogTool='brush'; setMode('fog'); $('fogBrush').classList.add('on'); $('fogRect').classList.remove('on'); };
 $('fogRect').onclick=()=>{ fogTool='rect'; setMode('fog'); $('fogRect').classList.add('on'); $('fogBrush').classList.remove('on'); };
@@ -680,7 +844,8 @@ function resetViewToMap(){
   view.y = H/2 - cy*view.scale;
   requestDraw();
 }
-$('resetView').onclick=resetViewToMap;
+$('resetViewRail').onclick=resetViewToMap;
+$('navUnlockBtn').onclick=()=>setMode('nav');
 
 function applyNumber(id){
   const v=+$(id).value;
@@ -697,11 +862,57 @@ document.querySelectorAll('button[data-step]').forEach(btn=>btn.onclick=()=>{
   markChange(()=>applyNumber(id));
 });
 
-function getState(includeImage=false){ return {type:'state', sender:role, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, tokens}; }
+document.querySelectorAll('button[data-set]').forEach(btn=>btn.onclick=()=>{
+  const id=btn.dataset.set;
+  const input=$(id);
+  if(!input) return;
+  input.value = btn.dataset.value;
+  markChange(()=>applyNumber(id));
+});
+
+
+if($('mapMode')) $('mapMode').onclick=()=>setMode('map');
+if($('switchScene')) $('switchScene').onclick=()=>switchScene($('sceneSelect').value);
+if($('addScene')) $('addScene').onclick=()=>{
+  captureCurrentScene();
+  const name=($('newSceneName').value || 'Nuova scena').trim() || 'Nuova scena';
+  const sc=defaultScene(name);
+  scenes[sc.id]=sc;
+  switchScene(sc.id);
+};
+if($('duplicateScene')) $('duplicateScene').onclick=()=>{
+  captureCurrentScene();
+  const src=JSON.parse(JSON.stringify(scenes[currentSceneId]));
+  const id='scene-'+Date.now()+Math.random().toString(16).slice(2);
+  src.id=id; src.name=(src.name || 'Scena')+' copia';
+  scenes[id]=src;
+  switchScene(id);
+};
+if($('copyTokensToScene')) $('copyTokensToScene').onclick=()=>{
+  captureCurrentScene();
+  const src=lastSceneId && scenes[lastSceneId] ? scenes[lastSceneId] : null;
+  if(!src){ alert('Non c’è una scena precedente da cui copiare le pedine.'); return; }
+  tokens=JSON.parse(JSON.stringify(src.tokens || []));
+  captureCurrentScene(); requestDraw(); sendState(false);
+};
+if($('deleteScene')) $('deleteScene').onclick=()=>{
+  ensureScenes();
+  const ids=Object.keys(scenes);
+  if(ids.length<=1){ alert('Deve esistere almeno una scena.'); return; }
+  if(!confirm('Eliminare questa scena?')) return;
+  delete scenes[currentSceneId];
+  currentSceneId=Object.keys(scenes)[0];
+  applyScene(currentSceneId); sendState(true);
+};
+if($('exportCampaign')) $('exportCampaign').onclick=exportCampaign;
+if($('importCampaign')) $('importCampaign').onchange=e=>{ const f=e.target.files[0]; if(f) importCampaignFile(f).catch(err=>alert('Errore import: '+err.message)); };
+
+function getState(includeImage=false){ captureCurrentScene(); return {type:'state', sender:role, currentSceneId, scenes, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, tokens}; }
 function sendState(includeImage=false){
   if(!currentRoom) return;
   if(role !== 'master' && role !== 'player') return;
-  const state = role === 'player' ? {type:'state', sender:'player', tokens} : getState(includeImage);
+  captureCurrentScene();
+  const state = role === 'player' ? {type:'state', sender:'player', currentSceneId, tokens} : getState(includeImage);
   socket.emit('state:update', state);
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
@@ -709,17 +920,28 @@ function requestSync(){ if(currentRoom) socket.emit('state:request'); }
 function applyState(s){
   if(!s) return;
   if(role === 'master' && s.sender === 'player'){
-    if(Array.isArray(s.tokens)) tokens=s.tokens;
+    const sid=s.currentSceneId || currentSceneId;
+    if(Array.isArray(s.tokens)){
+      if(sid===currentSceneId) tokens=s.tokens;
+      ensureScenes();
+      if(scenes[sid]) scenes[sid].tokens=s.tokens;
+    }
     requestDraw();
     return;
   }
   if(role !== 'player' || s.sender === 'player') return;
+  if(s.scenes){
+    scenes=s.scenes;
+    currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
+    applyScene(currentSceneId);
+    return;
+  }
   map=s.map||map;
   grid=s.grid||grid;
   if(s.fogState) fogState=s.fogState;
   if(Array.isArray(s.tokens)) tokens=s.tokens;
   if(s.imgSrc && s.imgSrc!==imgSrc) loadImage(s.imgSrc);
-  syncInputs(); requestDraw();
+  captureCurrentScene(); syncInputs(); requestDraw();
 }
 socket.on('connect', () => {
   if(currentRoom){
@@ -732,11 +954,14 @@ socket.on('connect', () => {
 socket.on('state:update', state => applyState(state));
 socket.on('token:move', data => {
   if(!data || !data.id) return;
-  const t = tokens.find(x => x.id === data.id);
+  const sid=data.sceneId || currentSceneId;
+  ensureScenes();
+  const targetTokens = sid===currentSceneId ? tokens : (scenes[sid]?.tokens || []);
+  const t = targetTokens.find(x => x.id === data.id);
   if(!t) return;
   t.gx = data.gx;
   t.gy = data.gy;
-  requestDraw();
+  if(sid===currentSceneId){ captureCurrentScene(); requestDraw(); }
 });
 
 $('undoBtn').onclick=undo;
@@ -755,13 +980,15 @@ window.addEventListener('keydown', e=>{
 function showPanel(name){
   document.querySelectorAll('[data-panel-content]').forEach(el=>el.classList.toggle('active', el.dataset.panelContent===name));
   document.querySelectorAll('.tool-tab').forEach(el=>el.classList.toggle('on', el.dataset.panel===name));
+  const titles={map:'🗺️Mappa', grid:'#Griglia', fog:'🌫️Nebbia', tokens:'👤Pedine', save:'💾Salva / Carica'};
+  if($('panelTitle')) $('panelTitle').textContent = titles[name] || 'D&D TableTop';
   $('toolPanel').classList.remove('collapsed');
 }
 $('togglePanel').onclick=()=> $('toolPanel').classList.toggle('collapsed');
 $('closePanel').onclick=()=> $('toolPanel').classList.add('collapsed');
-document.querySelectorAll('.tool-tab').forEach(btn=>btn.onclick=()=>{ showPanel(btn.dataset.panel); if(['map','grid','fog','tokens'].includes(btn.dataset.panel)) setMode(btn.dataset.panel==='tokens' ? 'tokens' : btn.dataset.panel); if(btn.dataset.panel==='view') setMode('nav'); });
+document.querySelectorAll('.tool-tab').forEach(btn=>btn.onclick=()=>{ showPanel(btn.dataset.panel); if(['map','grid','fog','tokens'].includes(btn.dataset.panel)) setMode(btn.dataset.panel==='tokens' ? 'tokens' : btn.dataset.panel); });
 
-resize(); syncInputs(); updateUndoRedo();
+ensureScenes(); captureCurrentScene(); resize(); syncInputs(); updateUndoRedo(); updateNavUi(); renderScenesUi();
 </script>
 </body>
 </html>

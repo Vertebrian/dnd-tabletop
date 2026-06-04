@@ -12,14 +12,59 @@ const io = new Server(server, {
 
 const rooms = new Map();
 
-function emptyState() {
+function makeDefaultScene() {
   return {
+    id: "scene-1",
+    name: "Scena 1",
     imgSrc: null,
     map: { x: 100, y: 80, scale: 1, locked: false },
-    grid: { x: 0, y: 0, size: 50, opacity: 0.6, color: "rgba(0,0,0,1)", locked: false },
+    grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
     fogState: { base: "dark", strokes: [] },
     tokens: []
   };
+}
+
+function emptyState() {
+  const scene = makeDefaultScene();
+  return {
+    currentSceneId: scene.id,
+    scenes: { [scene.id]: scene },
+    imgSrc: scene.imgSrc,
+    map: scene.map,
+    grid: scene.grid,
+    fogState: scene.fogState,
+    tokens: scene.tokens
+  };
+}
+
+function normalizeState(state) {
+  if (!state.scenes) {
+    const scene = {
+      id: "scene-1",
+      name: "Scena 1",
+      imgSrc: state.imgSrc || null,
+      map: state.map || { x: 100, y: 80, scale: 1, locked: false },
+      grid: state.grid || { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
+      fogState: state.fogState || { base: "dark", strokes: [] },
+      tokens: Array.isArray(state.tokens) ? state.tokens : []
+    };
+    state.currentSceneId = scene.id;
+    state.scenes = { [scene.id]: scene };
+  }
+  return state;
+}
+
+function syncTopLevel(state) {
+  normalizeState(state);
+  const scene = state.scenes[state.currentSceneId] || Object.values(state.scenes)[0];
+  if (!scene) return state;
+  state.currentSceneId = scene.id;
+  state.imgSrc = scene.imgSrc || null;
+  state.map = scene.map;
+  state.grid = scene.grid;
+  state.fogState = scene.fogState;
+  state.tokens = scene.tokens || [];
+  return state;
 }
 
 function getRoomName(socket) {
@@ -28,7 +73,7 @@ function getRoomName(socket) {
 
 function getRoomState(room) {
   if (!rooms.has(room)) rooms.set(room, emptyState());
-  return rooms.get(room);
+  return normalizeState(rooms.get(room));
 }
 
 function sanitizeRoom(room) {
@@ -42,7 +87,6 @@ function sanitizeRoom(room) {
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.static(__dirname));
-
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -55,7 +99,7 @@ io.on("connection", (socket) => {
     if (socket.data.room) socket.leave(socket.data.room);
     socket.data.room = room;
     socket.join(room);
-    const state = getRoomState(room);
+    const state = syncTopLevel(getRoomState(room));
     console.log(`Client ${socket.id} entrato nella room ${room}`);
     socket.emit("state:update", { type: "state", sender: "server", ...state });
     if (typeof ack === "function") ack({ ok: true, room });
@@ -63,7 +107,7 @@ io.on("connection", (socket) => {
 
   socket.on("state:request", () => {
     const room = getRoomName(socket);
-    const state = getRoomState(room);
+    const state = syncTopLevel(getRoomState(room));
     socket.emit("state:update", { type: "state", sender: "server", ...state });
   });
 
@@ -73,38 +117,51 @@ io.on("connection", (socket) => {
     if (!incoming) return;
 
     if (incoming.sender === "player") {
+      const sceneId = incoming.currentSceneId || state.currentSceneId;
       if (Array.isArray(incoming.tokens)) {
-        state.tokens = incoming.tokens;
+        normalizeState(state);
+        if (state.scenes[sceneId]) state.scenes[sceneId].tokens = incoming.tokens;
+        syncTopLevel(state);
         socket.to(room).emit("state:update", {
           type: "state",
           sender: "player",
-          tokens: state.tokens
+          currentSceneId: sceneId,
+          tokens: incoming.tokens
         });
       }
       return;
     }
 
-    if (incoming.imgSrc) state.imgSrc = incoming.imgSrc;
-    if (incoming.map) state.map = incoming.map;
-    if (incoming.grid) state.grid = incoming.grid;
-    if (incoming.fogState) state.fogState = incoming.fogState;
-    if (Array.isArray(incoming.tokens)) state.tokens = incoming.tokens;
+    if (incoming.scenes) {
+      state.scenes = incoming.scenes;
+      state.currentSceneId = incoming.currentSceneId || state.currentSceneId;
+      syncTopLevel(state);
+    } else {
+      const scene = state.scenes[state.currentSceneId] || Object.values(state.scenes)[0];
+      if (incoming.imgSrc) scene.imgSrc = incoming.imgSrc;
+      if (incoming.map) scene.map = incoming.map;
+      if (incoming.grid) scene.grid = incoming.grid;
+      if (incoming.fogState) scene.fogState = incoming.fogState;
+      if (Array.isArray(incoming.tokens)) scene.tokens = incoming.tokens;
+      syncTopLevel(state);
+    }
 
     io.to(room).emit("state:update", { type: "state", sender: "master", ...state });
   });
 
-
-
   socket.on("token:move", (data) => {
     const room = getRoomName(socket);
-    if (!data || !data.id) return;
+    if (!data?.id) return;
 
     const state = getRoomState(room);
-    const token = state.tokens.find(t => t.id === data.id);
-
-    if (token) {
-      token.gx = data.gx;
-      token.gy = data.gy;
+    const sceneId = data.sceneId || state.currentSceneId;
+    const scene = state.scenes[sceneId];
+    if (scene && Array.isArray(scene.tokens)) {
+      const token = scene.tokens.find(t => t.id === data.id);
+      if (token) {
+        token.gx = data.gx;
+        token.gy = data.gy;
+      }
     }
 
     socket.to(room).emit("token:move", data);
@@ -117,5 +174,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Mini VTT attivo su http://localhost:${PORT}`);
+  console.log(`D&D TableTop attivo su http://localhost:${PORT}`);
 });
