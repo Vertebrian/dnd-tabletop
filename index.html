@@ -427,8 +427,10 @@ function moveSelectedTokenFromEvent(e){
   const t=tokens.find(x=>x.id===selectedTokenId);
   if(!t || !canMoveToken(t)) return false;
   const c=worldToGridCell(w.x,w.y);
+  if(t.gx === c.gx && t.gy === c.gy) return true;
   t.gx=c.gx; t.gy=c.gy;
-  requestDraw(); scheduleSend(false);
+  socket.emit('token:move', { id:t.id, gx:t.gx, gy:t.gy });
+  requestDraw();
   return true;
 }
 
@@ -592,7 +594,7 @@ function endPointer(e){
   activePointers.delete(e.pointerId);
   if(activePointers.size>=2){ updatePinchStart(); return; }
   if(dragging && role==='master' && mode==='fog' && fogTool==='rect') finishFogRect();
-  if(dragging && (role==='master' || draggingToken)) scheduleSend(false);
+  if(dragging && (role==='master' || draggingToken) && !draggingToken) scheduleSend(false);
   if(role==='master') commitHistory(dragSnapshot);
   dragging=false; draggingToken=false; dragSnapshot=null; pinchStart=null;
 }
@@ -728,6 +730,14 @@ socket.on('connect', () => {
   }
 });
 socket.on('state:update', state => applyState(state));
+socket.on('token:move', data => {
+  if(!data || !data.id) return;
+  const t = tokens.find(x => x.id === data.id);
+  if(!t) return;
+  t.gx = data.gx;
+  t.gy = data.gy;
+  requestDraw();
+});
 
 $('undoBtn').onclick=undo;
 $('redoBtn').onclick=redo;

@@ -93,6 +93,23 @@ io.on("connection", (socket) => {
     io.to(room).emit("state:update", { type: "state", sender: "master", ...state });
   });
 
+
+
+  socket.on("token:move", (data) => {
+    const room = getRoomName(socket);
+    if (!data || !data.id) return;
+
+    const state = getRoomState(room);
+    const token = state.tokens.find(t => t.id === data.id);
+
+    if (token) {
+      token.gx = data.gx;
+      token.gy = data.gy;
+    }
+
+    socket.to(room).emit("token:move", data);
+  });
+
   socket.on("disconnect", () => {
     console.log("Client disconnesso", socket.id);
   });
