@@ -67,6 +67,22 @@
   #statusPill { position:fixed; right:14px; top:14px; padding:8px 10px; border-radius:999px; border:1px solid #444; background:rgba(17,17,17,.85); box-shadow:0 8px 25px rgba(0,0,0,.35); }
   #bottomHint { }
 
+
+  .tokenLibraryBox { margin-top:12px; padding:10px; border:1px solid #303030; border-radius:12px; background:rgba(255,255,255,.035); }
+  .tokenLibraryHead { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .tokenLibraryTitle { font-weight:700; color:#eee; font-size:13px; }
+  .tokenSelected { display:grid; grid-template-columns:44px 1fr; gap:10px; align-items:center; margin:8px 0 10px; padding:8px; border:1px solid #333; border-radius:10px; background:#151515; }
+  .tokenSelected img { width:42px; height:42px; border-radius:50%; object-fit:cover; border:1px solid #5f5136; background:#222; }
+  .tokenSelected strong { display:block; font-size:13px; color:#fff; }
+  .tokenSelected span { display:block; font-size:11px; color:#aaa; margin-top:2px; }
+  .tokenFilterRow { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0; }
+  .tokenGrid { display:grid; grid-template-columns:repeat(4, 1fr); gap:7px; max-height:250px; overflow:auto; padding-right:2px; }
+  .tokenChoice { padding:5px 4px; border-radius:10px; border:1px solid #343434; background:#1b1b1b; min-height:76px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; }
+  .tokenChoice:hover { background:#2a2a2a; border-color:#6b5a38; transform:none; }
+  .tokenChoice.selected { background:#3b3020 !important; border-color:#d4a84e !important; box-shadow:0 0 0 2px rgba(212,168,78,.18); }
+  .tokenChoice img { width:42px; height:42px; border-radius:50%; object-fit:cover; border:1px solid #6b5a38; background:#222; }
+  .tokenChoice span { font-size:10px; line-height:1.05; color:#ddd; text-align:center; }
+
   @media (max-width: 720px) {
     #toolPanel { width:min(310px, calc(100vw - 96px)); }
     #statusPill { display:none; }
@@ -112,12 +128,13 @@
       <button class="railBtn tool-tab master-only" data-panel="grid" title="Griglia">#</button>
       <button class="railBtn tool-tab master-only" data-panel="fog" title="Nebbia">🌫️</button>
       <button class="railBtn tool-tab master-only" data-panel="tokens" title="Pedine">👤</button>
+      <button class="railBtn tool-tab master-only" data-panel="scenes" title="Scene">🎬</button>
       <button id="undoBtn" class="railBtn" title="Undo / Ctrl+Z">↶</button>
       <button id="redoBtn" class="railBtn" title="Redo / Ctrl+Y">↷</button>
       <div class="railSeparator"></div>
       <button id="navUnlockBtn" class="railBtn nav-free" title="Naviga / sblocca movimento schermata">✋</button>
       <button id="resetViewRail" class="railBtn" title="Reset vista">👁️</button>
-      <button class="railBtn tool-tab" data-panel="save" title="Salva / Carica">💾</button>
+      <button class="railBtn tool-tab master-only" data-panel="save" title="Salva / Carica">💾</button>
     </div>
 
     <aside id="toolPanel">
@@ -141,27 +158,6 @@
           <button data-step="mapScale" data-dir="1">+</button>
         </div>
         <small>Di solito puoi lasciarla a 100%. Serve solo se l'immagine caricata è troppo grande/piccola rispetto al foglio.</small>
-
- <label>Scena attiva</label>
-        <select id="sceneSelect"></select>
-        <button id="switchScene" class="wideBtn">Apri scena selezionata</button>
-
-        <div class="panelSection">
-          <label>Nuova scena</label>
-          <input id="newSceneName" type="text" value="Nuova scena" autocomplete="off">
-          <button id="addScene" class="wideBtn">➕ Crea scena vuota</button>
-          <button id="duplicateScene" class="wideBtn">📋 Duplica scena attuale</button>
-        </div>
-
-        <div class="panelSection">
-          <button id="copyTokensToScene" class="wideBtn">🚶 Porta pedine qui</button>
-          <small>Copia nella scena attiva le pedine dell'ultima scena visitata. Utile quando il party sale/scende piano.</small>
-        </div>
-
-        <div class="panelSection">
-          <button id="deleteScene" class="warn wideBtn">Elimina scena attiva</button>
-        </div>
-        <div id="sceneList" class="sceneList"></div>
       </section>
 
       <section class="panel master-only" data-panel-content="grid">
@@ -240,6 +236,21 @@
             <input id="tokenH" type="number" min="1" max="20" step="1" value="1">
           </div>
         </div>
+
+        <div class="tokenLibraryBox">
+          <div class="tokenLibraryHead">
+            <div class="tokenLibraryTitle">Aspetto pedina</div>
+            <button id="clearTokenAsset" title="Usa pedina colorata semplice" style="width:auto;padding:5px 8px">×</button>
+          </div>
+          <div id="tokenSelectedPreview" class="tokenSelected"></div>
+          <div class="tokenFilterRow">
+            <select id="tokenCategoryFilter"></select>
+            <input id="tokenSearch" type="text" placeholder="Cerca...">
+          </div>
+          <div id="tokenLibraryGrid" class="tokenGrid"></div>
+          <button id="applyTokenAsset" style="width:100%;margin-top:8px">Applica alla pedina selezionata</button>
+        </div>
+
         <div class="panelSection">
           <button id="addToken" style="width:100%">Crea pedina</button>
         </div>
@@ -247,8 +258,28 @@
         <small>Le pedine si agganciano sempre al centro delle caselle.</small>
       </section>
 
+      <section class="panel master-only" data-panel-content="scenes">
+        <div class="note tiny">Scegli una scena dall'elenco. La scena attiva è evidenziata.</div>
+        <div id="sceneList" class="sceneList"></div>
 
-      <section class="panel" data-panel-content="save">
+        <div class="panelSection">
+          <label>Nuova scena</label>
+          <input id="newSceneName" type="text" value="Nuova scena" autocomplete="off">
+          <button id="addScene" class="wideBtn">➕ Crea scena vuota</button>
+          <button id="duplicateScene" class="wideBtn">📋 Duplica scena attuale</button>
+        </div>
+
+        <div class="panelSection">
+          <button id="copyTokensToScene" class="wideBtn">🚶 Porta pedine qui</button>
+          <small>Copia nella scena attiva le pedine dell'ultima scena visitata. Utile quando il party sale/scende piano.</small>
+        </div>
+
+        <div class="panelSection">
+          <button id="deleteScene" class="warn wideBtn">Elimina scena attiva</button>
+        </div>
+      </section>
+
+      <section class="panel master-only" data-panel-content="save">
         <button id="exportCampaign" class="wideBtn">⬇️ Salva campagna su file</button>
         <label class="fileLine">Carica campagna da file</label>
         <input id="importCampaign" type="file" accept="application/json,.json">
@@ -286,8 +317,97 @@ let selectedTokenId=null;
 let fogState={base:'dark', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
 let syncTimer=null, rafPending=false;
 let history=[], historyIndex=-1, dragSnapshot=null;
+let selectedTokenAsset=null;
+const tokenImageCache=new Map();
 
 function $(id){ return document.getElementById(id); }
+
+const TOKEN_LIBRARY = [
+  {id:'umano', name:'Umano', category:'Razze standard', icon:'assets/tokens/umano.png'},
+  {id:'elfo', name:'Elfo', category:'Razze standard', icon:'assets/tokens/elfo.png'},
+  {id:'nano', name:'Nano', category:'Razze standard', icon:'assets/tokens/nano.png'},
+  {id:'halfling', name:'Halfling', category:'Razze standard', icon:'assets/tokens/halfling.png'},
+  {id:'gnomo', name:'Gnomo', category:'Razze standard', icon:'assets/tokens/gnomo.png'},
+  {id:'mezzelfo', name:'Mezzelfo', category:'Razze standard', icon:'assets/tokens/mezzelfo.png'},
+  {id:'mezzorco', name:'Mezzorco', category:'Razze standard', icon:'assets/tokens/mezzorco.png'},
+  {id:'dragonide', name:'Dragonide', category:'Razze speciali', icon:'assets/tokens/dragonide.png'},
+  {id:'dragonide-metallico', name:'Dragonide metallico', category:'Razze speciali', icon:'assets/tokens/dragonide-metallico.png'},
+  {id:'dragonide-cromatico', name:'Dragonide cromatico', category:'Razze speciali', icon:'assets/tokens/dragonide-cromatico.png'},
+  {id:'dragonide-gemma', name:'Dragonide gemma', category:'Razze speciali', icon:'assets/tokens/dragonide-gemma.png'},
+  {id:'tiefling', name:'Tiefling', category:'Razze speciali', icon:'assets/tokens/tiefling.png'},
+  {id:'aasimar', name:'Aasimar', category:'Razze speciali', icon:'assets/tokens/aasimar.png'},
+  {id:'goliath', name:'Goliath', category:'Razze speciali', icon:'assets/tokens/goliath.png'},
+  {id:'goliath-pietra', name:'Goliath di pietra', category:'Razze speciali', icon:'assets/tokens/goliath-pietra.png'},
+  {id:'tabaxi', name:'Tabaxi', category:'Razze speciali', icon:'assets/tokens/tabaxi.png'},
+  {id:'kobold', name:'Kobold', category:'Razze speciali', icon:'assets/tokens/kobold.png'},
+  {id:'aarakocra', name:'Aarakocra', category:'Razze speciali', icon:'assets/tokens/aarakocra.png'},
+  {id:'firbolg', name:'Firbolg', category:'Razze speciali', icon:'assets/tokens/firbolg.png'},
+  {id:'genasi', name:'Genasi', category:'Razze speciali', icon:'assets/tokens/genasi.png'},
+  {id:'kenku', name:'Kenku', category:'Razze speciali', icon:'assets/tokens/kenku.png'},
+  {id:'yuan-ti', name:'Yuan-ti', category:'Razze speciali', icon:'assets/tokens/yuan-ti.png'},
+  {id:'tortle', name:'Tortle', category:'Razze speciali', icon:'assets/tokens/tortle.png'},
+  {id:'githyanki', name:'Githyanki', category:'Razze speciali', icon:'assets/tokens/githyanki.png'},
+  {id:'changeling', name:'Changeling', category:'Razze speciali', icon:'assets/tokens/changeling.png'},
+  {id:'shifter', name:'Shifter', category:'Razze speciali', icon:'assets/tokens/shifter.png'},
+  {id:'warforged', name:'Warforged', category:'Razze speciali', icon:'assets/tokens/warforged.png'},
+  {id:'kalashtar', name:'Kalashtar', category:'Razze speciali', icon:'assets/tokens/kalashtar.png'},
+  {id:'goblin-pg', name:'Goblin PG', category:'Razze speciali', icon:'assets/tokens/goblin-pg.png'},
+  {id:'bugbear-pg', name:'Bugbear PG', category:'Razze speciali', icon:'assets/tokens/bugbear-pg.png'},
+  {id:'lupo', name:'Lupo', category:'Mostri Barovia', icon:'assets/tokens/lupo.png'},
+  {id:'pipistrello', name:'Pipistrello', category:'Mostri Barovia', icon:'assets/tokens/pipistrello.png'},
+  {id:'corvo', name:'Corvo', category:'Mostri Barovia', icon:'assets/tokens/corvo.png'},
+  {id:'ragno-gigante', name:'Ragno gigante', category:'Mostri Barovia', icon:'assets/tokens/ragno-gigante.png'},
+  {id:'scheletro', name:'Scheletro', category:'Non morti', icon:'assets/tokens/scheletro.png'},
+  {id:'zombie', name:'Zombie', category:'Non morti', icon:'assets/tokens/zombie.png'},
+  {id:'ghoul', name:'Ghoul', category:'Non morti', icon:'assets/tokens/ghoul.png'},
+  {id:'ombra', name:'Ombra', category:'Non morti', icon:'assets/tokens/ombra.png'},
+  {id:'spettro', name:'Spettro', category:'Non morti', icon:'assets/tokens/spettro.png'},
+  {id:'vampiro', name:'Vampiro', category:'Non morti', icon:'assets/tokens/vampiro.png'},
+  {id:'bandito', name:'Bandito', category:'Umanoidi', icon:'assets/tokens/bandito.png'},
+  {id:'guardia', name:'Guardia', category:'Umanoidi', icon:'assets/tokens/guardia.png'},
+  {id:'cultista', name:'Cultista', category:'Umanoidi', icon:'assets/tokens/cultista.png'},
+  {id:'goblin', name:'Goblin', category:'Umanoidi', icon:'assets/tokens/goblin.png'},
+  {id:'orco', name:'Orco', category:'Umanoidi', icon:'assets/tokens/orco.png'},
+  {id:'troll', name:'Troll', category:'Umanoidi', icon:'assets/tokens/troll.png'},
+  {id:'ogre', name:'Ogre', category:'Umanoidi', icon:'assets/tokens/ogre.png'},
+  {id:'lupo-mannaro', name:'Lupo mannaro', category:'Boss / Speciali', icon:'assets/tokens/lupo-mannaro.png'},
+  {id:'strahd', name:'Strahd', category:'Boss / Speciali', icon:'assets/tokens/strahd.png'}
+];
+function getTokenImage(src){
+  if(!src) return null;
+  if(tokenImageCache.has(src)) return tokenImageCache.get(src);
+  const im=new Image();
+  im.onload=()=>requestDraw();
+  im.src=src;
+  tokenImageCache.set(src, im);
+  return im;
+}
+function tokenAssetById(id){ return TOKEN_LIBRARY.find(t=>t.id===id) || null; }
+function setSelectedTokenAsset(asset){
+  selectedTokenAsset=asset || null;
+  renderTokenLibrary();
+}
+function renderTokenLibrary(){
+  const gridEl=$('tokenLibraryGrid'), catEl=$('tokenCategoryFilter'), searchEl=$('tokenSearch'), preview=$('tokenSelectedPreview');
+  if(!gridEl || !catEl || !searchEl || !preview) return;
+  if(!catEl.dataset.ready){
+    const cats=['Tutti', ...Array.from(new Set(TOKEN_LIBRARY.map(t=>t.category)))];
+    catEl.innerHTML=cats.map(c=>`<option value="${c}">${c}</option>`).join('');
+    catEl.dataset.ready='1';
+  }
+  const q=searchEl.value.trim().toLowerCase();
+  const cat=catEl.value || 'Tutti';
+  const items=TOKEN_LIBRARY.filter(t=>(cat==='Tutti'||t.category===cat) && (!q || t.name.toLowerCase().includes(q)));
+  preview.innerHTML = selectedTokenAsset
+    ? `<img src="${selectedTokenAsset.icon}" alt=""><div><strong>${selectedTokenAsset.name}</strong><span>${selectedTokenAsset.category}</span></div>`
+    : `<div style="width:42px;height:42px;border-radius:50%;background:#315d9b;border:1px solid #777"></div><div><strong>Pedina semplice</strong><span>Nessuna icona selezionata</span></div>`;
+  gridEl.innerHTML=items.map(t=>`
+    <button class="tokenChoice ${selectedTokenAsset?.id===t.id?'selected':''}" data-token-asset="${t.id}" title="${t.name}">
+      <img src="${t.icon}" alt=""><span>${t.name}</span>
+    </button>`).join('');
+  gridEl.querySelectorAll('[data-token-asset]').forEach(btn=>btn.onclick=()=>setSelectedTokenAsset(tokenAssetById(btn.dataset.tokenAsset)));
+}
+
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 function loadImage(src){ imgSrc=src; img=new Image(); img.onload=()=>requestDraw(); img.src=src; }
 function requestDraw(){ if(rafPending) return; rafPending=true; requestAnimationFrame(()=>{ rafPending=false; draw(); }); }
@@ -361,17 +481,13 @@ function applyScene(sceneId){
   fogState=sc.fogState || {base:'dark', strokes:[]};
   tokens=Array.isArray(sc.tokens) ? sc.tokens : [];
   selectedTokenId=null;
-  syncInputs(); renderScenesUi(); requestDraw();
+  syncInputs(); renderScenesUi(); renderTokenLibrary(); requestDraw();
 }
 function renderScenesUi(){
-  const sel=$('sceneSelect'), list=$('sceneList');
-  if(!sel || !list) return;
+  const list=$('sceneList');
+  if(!list) return;
   ensureScenes();
   const entries=Object.values(scenes);
-  sel.innerHTML='';
-  for(const sc of entries){
-    const opt=document.createElement('option'); opt.value=sc.id; opt.textContent=sc.name || sc.id; opt.selected=sc.id===currentSceneId; sel.appendChild(opt);
-  }
   list.innerHTML='';
   for(const sc of entries){
     const b=document.createElement('button');
@@ -474,7 +590,7 @@ function setRole(nextRole){
   updateUndoRedo();
   updateNavUi();
   requestDraw();
-  showPanel(role === 'player' ? 'save' : 'map');
+  if(role === 'master') showPanel('map'); else $('toolPanel').classList.add('collapsed');
   if(currentRoom){ if(role === 'player') requestSync(); else sendState(true); }
 }
 $('chooseMaster').onclick=()=>setRole('master');
@@ -529,12 +645,28 @@ function drawTokens(){
     const w=t.w * grid.size, h=t.h * grid.size;
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.fillStyle = t.type === 'pg' ? 'rgba(80,140,255,.92)' : 'rgba(190,70,70,.92)';
-    ctx.strokeStyle = t.id === selectedTokenId ? 'rgba(255,255,255,1)' : 'rgba(0,0,0,.9)';
-    ctx.lineWidth = Math.max(2/view.scale, 3);
+    const rx=w*.43, ry=h*.43;
+    const selected = t.id === selectedTokenId;
     ctx.beginPath();
-    ctx.ellipse(0, 0, w*.43, h*.43, 0, 0, Math.PI*2);
-    ctx.fill(); ctx.stroke();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI*2);
+    if(t.icon){
+      const im=getTokenImage(t.icon);
+      if(im && im.complete && im.naturalWidth){
+        ctx.save();
+        ctx.clip();
+        ctx.drawImage(im, -rx, -ry, rx*2, ry*2);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = t.type === 'pg' ? 'rgba(80,140,255,.92)' : 'rgba(190,70,70,.92)';
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = t.type === 'pg' ? 'rgba(80,140,255,.92)' : 'rgba(190,70,70,.92)';
+      ctx.fill();
+    }
+    ctx.strokeStyle = selected ? 'rgba(255,255,255,1)' : 'rgba(0,0,0,.9)';
+    ctx.lineWidth = Math.max(2/view.scale, selected ? 4 : 3);
+    ctx.stroke();
     ctx.fillStyle='rgba(255,255,255,.95)';
     ctx.strokeStyle='rgba(0,0,0,.9)';
     ctx.lineWidth=Math.max(3/view.scale, 3);
@@ -821,7 +953,7 @@ $('file').onchange=async e=>{
 $('gridMode').onclick=()=>setMode('grid');
 $('addToken').onclick=()=>markChange(()=>{
   if(role !== 'master') return;
-  const t={ id:'t'+Date.now()+Math.random().toString(16).slice(2), label:$('tokenLabel').value.trim() || 'Pedina', type:$('tokenType').value, w:clamp(+$('tokenW').value||1,1,20), h:clamp(+$('tokenH').value||1,1,20), gx:0, gy:0 };
+  const t={ id:'t'+Date.now()+Math.random().toString(16).slice(2), label:$('tokenLabel').value.trim() || 'Pedina', type:$('tokenType').value, w:clamp(+$('tokenW').value||1,1,20), h:clamp(+$('tokenH').value||1,1,20), gx:0, gy:0, icon:selectedTokenAsset?.icon || null, assetId:selectedTokenAsset?.id || null };
   const center=screenToWorld(W/2,H/2); const c=worldToGridCell(center.x, center.y); t.gx=c.gx; t.gy=c.gy;
   tokens.push(t); selectedTokenId=t.id; captureCurrentScene(); requestDraw(); sendState(false);
 });
@@ -829,6 +961,19 @@ $('deleteToken').onclick=()=>markChange(()=>{
   if(role !== 'master' || !selectedTokenId) return;
   tokens=tokens.filter(t=>t.id!==selectedTokenId); selectedTokenId=null; captureCurrentScene(); requestDraw(); sendState(false);
 });
+
+if($('tokenCategoryFilter')) $('tokenCategoryFilter').onchange=renderTokenLibrary;
+if($('tokenSearch')) $('tokenSearch').oninput=renderTokenLibrary;
+if($('clearTokenAsset')) $('clearTokenAsset').onclick=()=>setSelectedTokenAsset(null);
+if($('applyTokenAsset')) $('applyTokenAsset').onclick=()=>markChange(()=>{
+  if(role !== 'master' || !selectedTokenId) return;
+  const t=tokens.find(x=>x.id===selectedTokenId);
+  if(!t) return;
+  t.icon=selectedTokenAsset?.icon || null;
+  t.assetId=selectedTokenAsset?.id || null;
+  captureCurrentScene(); requestDraw(); sendState(false);
+});
+
 
 $('gridColor').onchange=e=>markChange(()=>{ grid.color=e.target.value; requestDraw(); sendState(false); });
 $('fogBrush').onclick=()=>{ fogTool='brush'; setMode('fog'); $('fogBrush').classList.add('on'); $('fogRect').classList.remove('on'); };
@@ -872,7 +1017,6 @@ document.querySelectorAll('button[data-set]').forEach(btn=>btn.onclick=()=>{
 
 
 if($('mapMode')) $('mapMode').onclick=()=>setMode('map');
-if($('switchScene')) $('switchScene').onclick=()=>switchScene($('sceneSelect').value);
 if($('addScene')) $('addScene').onclick=()=>{
   captureCurrentScene();
   const name=($('newSceneName').value || 'Nuova scena').trim() || 'Nuova scena';
@@ -980,15 +1124,15 @@ window.addEventListener('keydown', e=>{
 function showPanel(name){
   document.querySelectorAll('[data-panel-content]').forEach(el=>el.classList.toggle('active', el.dataset.panelContent===name));
   document.querySelectorAll('.tool-tab').forEach(el=>el.classList.toggle('on', el.dataset.panel===name));
-  const titles={map:'🗺️Mappa', grid:'#Griglia', fog:'🌫️Nebbia', tokens:'👤Pedine', save:'💾Salva / Carica'};
+  const titles={map:'🗺️Mappa', grid:'#Griglia', fog:'🌫️Nebbia', tokens:'👤Pedine', scenes:'🎬Scene', save:'💾Salva / Carica'};
   if($('panelTitle')) $('panelTitle').textContent = titles[name] || 'D&D TableTop';
   $('toolPanel').classList.remove('collapsed');
 }
 $('togglePanel').onclick=()=> $('toolPanel').classList.toggle('collapsed');
 $('closePanel').onclick=()=> $('toolPanel').classList.add('collapsed');
-document.querySelectorAll('.tool-tab').forEach(btn=>btn.onclick=()=>{ showPanel(btn.dataset.panel); if(['map','grid','fog','tokens'].includes(btn.dataset.panel)) setMode(btn.dataset.panel==='tokens' ? 'tokens' : btn.dataset.panel); });
+document.querySelectorAll('.tool-tab').forEach(btn=>btn.onclick=()=>{ showPanel(btn.dataset.panel); });
 
-ensureScenes(); captureCurrentScene(); resize(); syncInputs(); updateUndoRedo(); updateNavUi(); renderScenesUi();
+ensureScenes(); captureCurrentScene(); resize(); syncInputs(); updateUndoRedo(); updateNavUi(); renderScenesUi(); renderTokenLibrary();
 </script>
 </body>
 </html>
