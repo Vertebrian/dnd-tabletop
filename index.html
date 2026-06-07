@@ -83,17 +83,6 @@
   .tokenChoice img { width:42px; height:42px; border-radius:50%; object-fit:cover; border:1px solid #6b5a38; background:#222; }
   .tokenChoice span { font-size:10px; line-height:1.05; color:#ddd; text-align:center; }
 
-
-  .drawToolGrid { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; margin-top:8px; }
-  .drawToolGrid button { min-height:38px; }
-  .drawColorRow { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:8px; }
-  .drawColorBtn { min-height:34px; font-size:12px; }
-  .drawColorBtn[data-color="rgba(0,0,0,1)"] { border-color:#777; }
-  .drawColorBtn[data-color="rgba(60,120,255,1)"] { border-color:#4f7cff; }
-  .drawColorBtn[data-color="rgba(220,60,60,1)"] { border-color:#d94f4f; }
-  #drawSizeRange { width:100%; margin-top:8px; accent-color:#d4a84e; }
-  .drawPreviewChip { margin-top:10px; padding:8px 10px; border-radius:10px; background:#151515; border:1px solid #333; font-size:12px; color:#bbb; }
-
   @media (max-width: 720px) {
     #toolPanel { width:min(310px, calc(100vw - 96px)); }
     #statusPill { display:none; }
@@ -138,7 +127,6 @@
       <button class="railBtn tool-tab master-only" data-panel="map" title="Mappa">🗺️</button>
       <button class="railBtn tool-tab master-only" data-panel="grid" title="Griglia">#</button>
       <button class="railBtn tool-tab master-only" data-panel="fog" title="Nebbia">🌫️</button>
-      <button class="railBtn tool-tab master-only" data-panel="draw" title="Disegno">✏️</button>
       <button class="railBtn tool-tab master-only" data-panel="tokens" title="Pedine">👤</button>
       <button class="railBtn tool-tab master-only" data-panel="scenes" title="Scene">🎬</button>
       <button id="undoBtn" class="railBtn" title="Undo / Ctrl+Z">↶</button>
@@ -227,43 +215,6 @@
           <button id="fogClear">Rivela tutto</button>
         </div>
         <small>Rettangolo: click, trascina e rilascia per scoprire un'area. Pennello: click e trascina.</small>
-      </section>
-
-
-      <section class="panel master-only" data-panel-content="draw">
-        <div class="drawPreviewChip">Disegni sopra la mappa e sotto pedine/nebbia. Visibili anche ai Player.</div>
-
-        <label>Strumento</label>
-        <div class="drawToolGrid">
-          <button id="drawPen" class="on">✏️ Penna</button>
-          <button id="drawRect">▭ Rettangolo</button>
-          <button id="drawCircle">◯ Cerchio</button>
-          <button id="drawEraser">🧽 Gomma</button>
-        </div>
-
-        <label>Colore</label>
-        <div class="drawColorRow">
-          <button class="drawColorBtn on" data-draw-color="rgba(0,0,0,1)">⚫ Nero</button>
-          <button class="drawColorBtn" data-draw-color="rgba(60,120,255,1)">🔵 Blu</button>
-          <button class="drawColorBtn" data-draw-color="rgba(220,60,60,1)">🔴 Rosso</button>
-        </div>
-
-        <label>Dimensione tratto / gomma</label>
-        <div class="triple">
-          <button data-step="drawSize" data-dir="-1">-</button>
-          <input id="drawSize" type="number" min="2" max="150" step="1" value="25">
-          <button data-step="drawSize" data-dir="1">+</button>
-        </div>
-        <input id="drawSizeRange" type="range" min="2" max="150" step="1" value="25">
-        <div class="quickRow">
-          <button data-set="drawSize" data-value="25">25</button>
-          <button data-set="drawSize" data-value="50">50</button>
-          <button data-set="drawSize" data-value="75">75</button>
-        </div>
-
-        <div class="panelSection">
-          <button id="clearDrawings" class="warn wideBtn">🗑 Cancella tutti i disegni</button>
-        </div>
       </section>
 
       <section class="panel master-only" data-panel-content="tokens">
@@ -360,7 +311,6 @@ let view={x:0,y:0,scale:1};
 let mode='nav';
 let dragging=false, draggingToken=false, last={x:0,y:0};
 let fogTool='brush', brush=50;
-let drawTool='pen', drawColor='rgba(0,0,0,1)', drawSize=25, drawings=[], activeDrawing=null, drawingPreview=null;
 let rectStart=null, rectPreview=null;
 let tokens=[];
 let selectedTokenId=null;
@@ -461,10 +411,10 @@ function renderTokenLibrary(){
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 function loadImage(src){ imgSrc=src; img=new Image(); img.onload=()=>requestDraw(); img.src=src; }
 function requestDraw(){ if(rafPending) return; rafPending=true; requestAnimationFrame(()=>{ rafPending=false; draw(); }); }
-function cloneCore(){ return JSON.parse(JSON.stringify({map, grid, fogState, drawings, tokens, selectedTokenId})); }
+function cloneCore(){ return JSON.parse(JSON.stringify({map, grid, fogState, tokens, selectedTokenId})); }
 function restoreCore(st){
   if(!st) return;
-  map=st.map; grid=st.grid; fogState=st.fogState; drawings=Array.isArray(st.drawings)?st.drawings:[]; tokens=st.tokens; selectedTokenId=st.selectedTokenId || null;
+  map=st.map; grid=st.grid; fogState=st.fogState; tokens=st.tokens; selectedTokenId=st.selectedTokenId || null;
   syncInputs(); requestDraw(); if(role==='master') sendState(false);
 }
 function sameCore(a,b){ return JSON.stringify(a) === JSON.stringify(b); }
@@ -505,19 +455,18 @@ function defaultScene(name='Scena 1'){
     map:{x:100,y:80,scale:1,locked:false},
     grid:{x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false},
     fogState:{base:'dark', strokes:[]},
-    drawings:[],
     tokens:[]
   };
 }
 function ensureScenes(){
   if(!scenes || typeof scenes !== 'object') scenes={};
   if(!scenes[currentSceneId]){
-    scenes[currentSceneId]={id:currentSceneId, name:'Scena 1', imgSrc, map, grid, fogState, drawings, tokens};
+    scenes[currentSceneId]={id:currentSceneId, name:'Scena 1', imgSrc, map, grid, fogState, tokens};
   }
 }
 function captureCurrentScene(){
   ensureScenes();
-  scenes[currentSceneId]={...(scenes[currentSceneId]||{}), id:currentSceneId, imgSrc, map, grid, fogState, drawings, tokens};
+  scenes[currentSceneId]={...(scenes[currentSceneId]||{}), id:currentSceneId, imgSrc, map, grid, fogState, tokens};
 }
 function applyScene(sceneId){
   ensureScenes();
@@ -530,7 +479,6 @@ function applyScene(sceneId){
   map=sc.map || {x:100,y:80,scale:1,locked:false};
   grid=sc.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
   fogState=sc.fogState || {base:'dark', strokes:[]};
-  drawings=Array.isArray(sc.drawings) ? sc.drawings : [];
   tokens=Array.isArray(sc.tokens) ? sc.tokens : [];
   selectedTokenId=null;
   syncInputs(); renderScenesUi(); renderTokenLibrary(); requestDraw();
@@ -568,7 +516,7 @@ function loadCampaignPayload(payload){
     currentSceneId=payload.currentSceneId || Object.keys(scenes)[0] || 'scene-1';
   } else {
     currentSceneId='scene-1';
-    scenes={ [currentSceneId]:{id:currentSceneId,name:'Scena 1',imgSrc:payload.imgSrc||null,map:payload.map,grid:payload.grid,fogState:payload.fogState,drawings:payload.drawings||[],tokens:payload.tokens||[]} };
+    scenes={ [currentSceneId]:{id:currentSceneId,name:'Scena 1',imgSrc:payload.imgSrc||null,map:payload.map,grid:payload.grid,fogState:payload.fogState,tokens:payload.tokens||[]} };
   }
   applyScene(currentSceneId);
   if(role==='master') sendState(true);
@@ -641,6 +589,7 @@ function setRole(nextRole){
   if(role==='master' && historyIndex<0) pushHistory();
   updateUndoRedo();
   updateNavUi();
+  requestMasterWakeLock();
   requestDraw();
   if(role === 'master') showPanel('map'); else $('toolPanel').classList.add('collapsed');
   if(currentRoom){ if(role === 'player') requestSync(); else sendState(true); }
@@ -671,120 +620,11 @@ function draw(){
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
   if(img) ctx.drawImage(img, map.x, map.y, img.width*map.scale, img.height*map.scale);
-  drawDrawings();
   drawGrid();
   drawTokens();
   ctx.restore();
 
   drawFogOverlay();
-}
-
-
-function drawDrawings(){
-  ctx.save();
-  ctx.lineCap='round';
-  ctx.lineJoin='round';
-  for(const d of drawings){
-    drawOneDrawing(d);
-  }
-  if(drawingPreview) drawOneDrawing(drawingPreview, true);
-  ctx.restore();
-}
-function drawOneDrawing(d, preview=false){
-  if(!d) return;
-  ctx.save();
-  ctx.globalAlpha = preview ? .75 : 1;
-  ctx.strokeStyle = d.color || 'rgba(0,0,0,1)';
-  ctx.fillStyle = d.color || 'rgba(0,0,0,1)';
-  ctx.lineWidth = Math.max((d.size || 4), 1);
-  if(d.type === 'pen' && Array.isArray(d.points) && d.points.length){
-    ctx.beginPath();
-    ctx.moveTo(d.points[0].x, d.points[0].y);
-    for(let i=1;i<d.points.length;i++) ctx.lineTo(d.points[i].x, d.points[i].y);
-    ctx.stroke();
-  } else if(d.type === 'rect'){
-    ctx.strokeRect(d.x, d.y, d.w, d.h);
-  } else if(d.type === 'circle'){
-    ctx.beginPath();
-    ctx.ellipse(d.cx, d.cy, Math.abs(d.rx), Math.abs(d.ry), 0, 0, Math.PI*2);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-function distToSegment(p, a, b){
-  const vx=b.x-a.x, vy=b.y-a.y, wx=p.x-a.x, wy=p.y-a.y;
-  const c1=vx*wx+vy*wy;
-  if(c1<=0) return Math.hypot(p.x-a.x,p.y-a.y);
-  const c2=vx*vx+vy*vy;
-  if(c2<=c1) return Math.hypot(p.x-b.x,p.y-b.y);
-  const t=c1/c2;
-  return Math.hypot(p.x-(a.x+t*vx), p.y-(a.y+t*vy));
-}
-function drawingHit(d, p, radius){
-  const pad=radius + (d.size || 4);
-  if(d.type === 'pen' && Array.isArray(d.points)){
-    for(let i=1;i<d.points.length;i++) if(distToSegment(p,d.points[i-1],d.points[i])<=pad) return true;
-  } else if(d.type === 'rect'){
-    const minX=Math.min(d.x,d.x+d.w), maxX=Math.max(d.x,d.x+d.w);
-    const minY=Math.min(d.y,d.y+d.h), maxY=Math.max(d.y,d.y+d.h);
-    if(p.x>=minX-pad && p.x<=maxX+pad && p.y>=minY-pad && p.y<=maxY+pad){
-      const dx=Math.min(Math.abs(p.x-minX), Math.abs(p.x-maxX));
-      const dy=Math.min(Math.abs(p.y-minY), Math.abs(p.y-maxY));
-      return p.x<minX || p.x>maxX || p.y<minY || p.y>maxY || Math.min(dx,dy)<=pad;
-    }
-  } else if(d.type === 'circle'){
-    const rx=Math.max(Math.abs(d.rx),1), ry=Math.max(Math.abs(d.ry),1);
-    const v=Math.sqrt(((p.x-d.cx)**2)/(rx*rx)+((p.y-d.cy)**2)/(ry*ry));
-    return Math.abs(v-1)*Math.max(rx,ry)<=pad;
-  }
-  return false;
-}
-function eraseDrawingAtPoint(p){
-  const before=drawings.length;
-  const radius=Math.max(4, drawSize/2);
-  drawings=drawings.filter(d=>!drawingHit(d,p,radius));
-  if(drawings.length!==before){ captureCurrentScene(); requestDraw(); scheduleSend(false); }
-}
-function startDrawing(e){
-  if(role !== 'master') return;
-  const p=eventWorld(e);
-  if(drawTool==='eraser'){ eraseDrawingAtPoint(p); return; }
-  if(drawTool==='pen'){
-    activeDrawing={type:'pen', color:drawColor, size:drawSize, points:[p]};
-    drawings.push(activeDrawing);
-  } else {
-    activeDrawing={type:drawTool, color:drawColor, size:drawSize, start:p};
-    drawingPreview=null;
-  }
-  requestDraw();
-}
-function updateDrawing(e){
-  if(role !== 'master') return;
-  const p=eventWorld(e);
-  if(drawTool==='eraser'){ eraseDrawingAtPoint(p); return; }
-  if(!activeDrawing) return;
-  if(activeDrawing.type==='pen'){
-    const pts=activeDrawing.points;
-    const lastPt=pts[pts.length-1];
-    if(Math.hypot(p.x-lastPt.x,p.y-lastPt.y) >= Math.max(2, drawSize*.2)) pts.push(p);
-  } else if(activeDrawing.type==='rect'){
-    const a=activeDrawing.start;
-    drawingPreview={type:'rect', color:drawColor, size:drawSize, x:a.x, y:a.y, w:p.x-a.x, h:p.y-a.y};
-  } else if(activeDrawing.type==='circle'){
-    const a=activeDrawing.start;
-    drawingPreview={type:'circle', color:drawColor, size:drawSize, cx:(a.x+p.x)/2, cy:(a.y+p.y)/2, rx:(p.x-a.x)/2, ry:(p.y-a.y)/2};
-  }
-  requestDraw();
-}
-function finishDrawing(){
-  if(role !== 'master') return;
-  if(drawTool==='eraser'){ activeDrawing=null; drawingPreview=null; return; }
-  if(activeDrawing && activeDrawing.type==='pen'){
-    if(activeDrawing.points.length<2) drawings.pop();
-  } else if(drawingPreview){
-    drawings.push(drawingPreview);
-  }
-  activeDrawing=null; drawingPreview=null; captureCurrentScene(); requestDraw(); scheduleSend(false);
 }
 
 function drawGrid(){
@@ -924,15 +764,12 @@ function syncInputs(){
   $('gridOpacity').value = Math.round(grid.opacity*100);
   $('gridColor').value = grid.color;
   $('brush').value = Math.round(brush);
-  if($('drawSize')) $('drawSize').value = Math.round(drawSize);
-  if($('drawSizeRange')) $('drawSizeRange').value = Math.round(drawSize);
 }
 
 function modeLabel(m){
   if(m === 'map') return 'Setup mappa';
   if(m === 'grid') return 'Muovi griglia';
   if(m === 'fog') return fogTool === 'rect' ? 'Nebbia: rettangolo' : 'Nebbia: pennello';
-  if(m === 'draw') return drawTool === 'eraser' ? 'Disegno: gomma' : (drawTool === 'rect' ? 'Disegno: rettangolo' : (drawTool === 'circle' ? 'Disegno: cerchio' : 'Disegno: penna'));
   if(m === 'tokens') return 'Pedine';
   return 'Navigazione libera';
 }
@@ -956,11 +793,6 @@ function setMode(m){
   if(m === 'fog'){
     if(fogTool === 'rect') $('fogRect')?.classList.add('on');
     else $('fogBrush')?.classList.add('on');
-  }
-  if(m === 'draw'){
-    const ids={pen:'drawPen', rect:'drawRect', circle:'drawCircle', eraser:'drawEraser'};
-    if($(ids[drawTool])) $(ids[drawTool]).classList.add('on');
-    document.querySelectorAll('.drawColorBtn').forEach(b=>b.classList.toggle('on', b.dataset.drawColor===drawColor));
   }
   updateNavUi();
 }
@@ -1034,8 +866,7 @@ canvas.addEventListener('pointerdown', e=>{
   if(hit && canMoveToken(hit)) { selectedTokenId=hit.id; draggingToken=true; moveSelectedTokenFromEvent(e); requestDraw(); return; }
   if(hit) { selectedTokenId=hit.id; requestDraw(); return; }
   selectedTokenId=null;
-  if(mode==='draw' && role==='master'){ startDrawing(e); }
-  else if(mode==='fog' && role==='master'){ if(fogTool==='rect') startFogRect(e); else addFogStroke(e); }
+  if(mode==='fog' && role==='master'){ if(fogTool==='rect') startFogRect(e); else addFogStroke(e); }
   requestDraw();
 });
 canvas.addEventListener('pointermove', e=>{
@@ -1052,7 +883,6 @@ canvas.addEventListener('pointermove', e=>{
   if(!dragging) return;
   const dx=e.clientX-last.x, dy=e.clientY-last.y; last={x:e.clientX,y:e.clientY};
   if(draggingToken) { moveSelectedTokenFromEvent(e); }
-  else if(mode==='draw' && role==='master'){ updateDrawing(e); }
   else if(mode==='fog' && role==='master'){ if(fogTool==='rect') updateFogRect(e); else addFogStroke(e); }
   else if(mode==='map' && !map.locked && role==='master') { map.x+=dx/view.scale; map.y+=dy/view.scale; scheduleSend(false); }
   else if(mode==='grid' && !grid.locked && role==='master') { grid.x+=dx/view.scale; grid.y+=dy/view.scale; syncInputs(); scheduleSend(false); }
@@ -1062,7 +892,6 @@ canvas.addEventListener('pointermove', e=>{
 function endPointer(e){
   activePointers.delete(e.pointerId);
   if(activePointers.size>=2){ updatePinchStart(); return; }
-  if(dragging && role==='master' && mode==='draw') finishDrawing();
   if(dragging && role==='master' && mode==='fog' && fogTool==='rect') finishFogRect();
   if(dragging && (role==='master' || draggingToken) && !draggingToken) scheduleSend(false);
   if(role==='master') commitHistory(dragSnapshot);
@@ -1170,10 +999,9 @@ function applyNumber(id){
   if(id==='gridSize') grid.size=clamp(v,2,1000);
   if(id==='gridOpacity') grid.opacity=clamp(v,0,100)/100;
   if(id==='brush') brush=clamp(v,2,1000);
-  if(id==='drawSize') drawSize=clamp(v,2,150);
   syncInputs(); requestDraw(); if(role==='master') sendState(false);
 }
-['mapScale','gridSize','gridOpacity','brush','drawSize'].forEach(id=>$(id).addEventListener('change',()=>markChange(()=>applyNumber(id))));
+['mapScale','gridSize','gridOpacity','brush'].forEach(id=>$(id).addEventListener('change',()=>markChange(()=>applyNumber(id))));
 document.querySelectorAll('button[data-step]').forEach(btn=>btn.onclick=()=>{
   const id=btn.dataset.step, dir=+btn.dataset.dir, input=$(id), step=+(input.step||1);
   input.value = (+input.value || 0) + dir*step;
@@ -1187,10 +1015,6 @@ document.querySelectorAll('button[data-set]').forEach(btn=>btn.onclick=()=>{
   input.value = btn.dataset.value;
   markChange(()=>applyNumber(id));
 });
-if($('drawSizeRange')) $('drawSizeRange').addEventListener('input', e=>{ $('drawSize').value=e.target.value; applyNumber('drawSize'); });
-['drawPen','drawRect','drawCircle','drawEraser'].forEach(id=>{ if($(id)) $(id).onclick=()=>{ drawTool={drawPen:'pen',drawRect:'rect',drawCircle:'circle',drawEraser:'eraser'}[id]; setMode('draw'); }; });
-document.querySelectorAll('.drawColorBtn').forEach(btn=>btn.onclick=()=>{ drawColor=btn.dataset.drawColor; setMode('draw'); });
-if($('clearDrawings')) $('clearDrawings').onclick=()=>markChange(()=>{ if(!drawings.length) return; if(!confirm('Cancellare tutti i disegni della scena?')) return; drawings=[]; captureCurrentScene(); requestDraw(); sendState(false); });
 
 
 if($('mapMode')) $('mapMode').onclick=()=>setMode('map');
@@ -1228,7 +1052,7 @@ if($('deleteScene')) $('deleteScene').onclick=()=>{
 if($('exportCampaign')) $('exportCampaign').onclick=exportCampaign;
 if($('importCampaign')) $('importCampaign').onchange=e=>{ const f=e.target.files[0]; if(f) importCampaignFile(f).catch(err=>alert('Errore import: '+err.message)); };
 
-function getState(includeImage=false){ captureCurrentScene(); return {type:'state', sender:role, currentSceneId, scenes, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, drawings, tokens}; }
+function getState(includeImage=false){ captureCurrentScene(); return {type:'state', sender:role, currentSceneId, scenes, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, tokens}; }
 function sendState(includeImage=false){
   if(!currentRoom) return;
   if(role !== 'master' && role !== 'player') return;
@@ -1260,7 +1084,6 @@ function applyState(s){
   map=s.map||map;
   grid=s.grid||grid;
   if(s.fogState) fogState=s.fogState;
-  if(Array.isArray(s.drawings)) drawings=s.drawings;
   if(Array.isArray(s.tokens)) tokens=s.tokens;
   if(s.imgSrc && s.imgSrc!==imgSrc) loadImage(s.imgSrc);
   captureCurrentScene(); syncInputs(); requestDraw();
@@ -1302,13 +1125,48 @@ window.addEventListener('keydown', e=>{
 function showPanel(name){
   document.querySelectorAll('[data-panel-content]').forEach(el=>el.classList.toggle('active', el.dataset.panelContent===name));
   document.querySelectorAll('.tool-tab').forEach(el=>el.classList.toggle('on', el.dataset.panel===name));
-  const titles={map:'🗺️Mappa', grid:'#Griglia', fog:'🌫️Nebbia', draw:'✏️Disegno', tokens:'👤Pedine', scenes:'🎬Scene', save:'💾Salva / Carica'};
+  const titles={map:'🗺️Mappa', grid:'#Griglia', fog:'🌫️Nebbia', tokens:'👤Pedine', scenes:'🎬Scene', save:'💾Salva / Carica'};
   if($('panelTitle')) $('panelTitle').textContent = titles[name] || 'D&D TableTop';
   $('toolPanel').classList.remove('collapsed');
 }
 $('togglePanel').onclick=()=> $('toolPanel').classList.toggle('collapsed');
 $('closePanel').onclick=()=> $('toolPanel').classList.add('collapsed');
 document.querySelectorAll('.tool-tab').forEach(btn=>btn.onclick=()=>{ showPanel(btn.dataset.panel); });
+
+
+
+// Protezione anti-refresh/chiusura tab: il browser mostra il popup standard "Sei sicuro?".
+function shouldWarnBeforeLeaving(){
+  return role === 'master' || role === 'player';
+}
+window.addEventListener('beforeunload', (e) => {
+  if(!shouldWarnBeforeLeaving()) return;
+  captureCurrentScene?.();
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+// Anti-timeout leggero: mantiene viva la connessione Socket.IO e, per il Master,
+// prova anche a impedire lo standby dello schermo quando il browser lo permette.
+let wakeLock = null;
+async function requestMasterWakeLock(){
+  if(role !== 'master') return;
+  if(!('wakeLock' in navigator)) return;
+  try{
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  }catch(err){
+    // Alcuni browser lo bloccano se la tab non e' attiva: non e' un errore critico.
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible') requestMasterWakeLock();
+});
+setInterval(() => {
+  if(socket.connected && currentRoom){
+    socket.emit('client:keepalive', { room: currentRoom, role, sceneId: currentSceneId, t: Date.now() });
+  }
+}, 20000);
 
 ensureScenes(); captureCurrentScene(); resize(); syncInputs(); updateUndoRedo(); updateNavUi(); renderScenesUi(); renderTokenLibrary();
 </script>

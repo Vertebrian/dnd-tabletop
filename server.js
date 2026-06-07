@@ -7,6 +7,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   maxHttpBufferSize: 20 * 1024 * 1024,
+  pingInterval: 25000,
+  pingTimeout: 60000,
   cors: { origin: "*" }
 });
 
@@ -169,6 +171,11 @@ io.on("connection", (socket) => {
     }
 
     socket.to(room).emit("token:move", data);
+  });
+
+  socket.on("client:keepalive", (data, ack) => {
+    socket.data.lastKeepalive = Date.now();
+    if (typeof ack === "function") ack({ ok: true });
   });
 
   socket.on("disconnect", () => {
