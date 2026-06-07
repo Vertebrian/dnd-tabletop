@@ -20,6 +20,7 @@ function makeDefaultScene() {
     map: { x: 100, y: 80, scale: 1, locked: false },
     grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
     fogState: { base: "dark", strokes: [] },
+    drawings: [],
     tokens: []
   };
 }
@@ -46,6 +47,7 @@ function normalizeState(state) {
       map: state.map || { x: 100, y: 80, scale: 1, locked: false },
       grid: state.grid || { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
       fogState: state.fogState || { base: "dark", strokes: [] },
+      drawings: Array.isArray(state.drawings) ? state.drawings : [],
       tokens: Array.isArray(state.tokens) ? state.tokens : []
     };
     state.currentSceneId = scene.id;
@@ -63,6 +65,7 @@ function syncTopLevel(state) {
   state.map = scene.map;
   state.grid = scene.grid;
   state.fogState = scene.fogState;
+  state.drawings = scene.drawings || [];
   state.tokens = scene.tokens || [];
   return state;
 }
@@ -142,6 +145,7 @@ io.on("connection", (socket) => {
       if (incoming.map) scene.map = incoming.map;
       if (incoming.grid) scene.grid = incoming.grid;
       if (incoming.fogState) scene.fogState = incoming.fogState;
+      if (Array.isArray(incoming.drawings)) scene.drawings = incoming.drawings;
       if (Array.isArray(incoming.tokens)) scene.tokens = incoming.tokens;
       syncTopLevel(state);
     }
