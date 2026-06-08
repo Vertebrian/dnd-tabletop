@@ -1,11 +1,16 @@
-D&D TableTop v15 - Fast Sync
+# D&D TableTop
 
-Avvio:
-npm install
-npm start
+Free browser-based Virtual Tabletop for Dungeons & Dragons.
 
-Novita v15:
-- Sync ottimizzato: non invia piu' tutte le scene e tutte le mappe a ogni modifica.
-- Player riceve solo la scena attiva e la mappa solo quando serve.
-- Cambio scena e caricamento mappa piu' leggeri.
-- Mantiene Disegno Master, Token Library, Scene, Salva/Carica, popup anti-refresh, keepalive e Wake Lock Master.
+A lightweight alternative to Roll20 for small groups and online campaigns.
+
+## Features
+
+- Multiplayer rooms
+- Fog of war
+- Token library
+- Multiple scenes / maps
+- Drawing tools
+- Save and load campaigns
+- Browser based
+- Free to use
