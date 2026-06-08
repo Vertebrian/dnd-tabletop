@@ -72,6 +72,35 @@ function syncTopLevel(state) {
   return state;
 }
 
+function makeClientState(state, includeAllScenes = false) {
+  syncTopLevel(state);
+  const scene = state.scenes[state.currentSceneId] || Object.values(state.scenes)[0] || makeDefaultScene();
+  const scenePayload = {
+    id: scene.id,
+    name: scene.name,
+    imgSrc: scene.imgSrc || null,
+    map: scene.map,
+    grid: scene.grid,
+    fogState: scene.fogState,
+    drawings: scene.drawings || [],
+    tokens: scene.tokens || []
+  };
+
+  const out = {
+    currentSceneId: scene.id,
+    scene: scenePayload,
+    imgSrc: scenePayload.imgSrc,
+    map: scenePayload.map,
+    grid: scenePayload.grid,
+    fogState: scenePayload.fogState,
+    drawings: scenePayload.drawings,
+    tokens: scenePayload.tokens
+  };
+
+  if (includeAllScenes) out.scenes = state.scenes;
+  return out;
+}
+
 function getRoomName(socket) {
   return socket.data.room || "default";
 }
@@ -104,16 +133,20 @@ io.on("connection", (socket) => {
     if (socket.data.room) socket.leave(socket.data.room);
     socket.data.room = room;
     socket.join(room);
-    const state = syncTopLevel(getRoomState(room));
+    const state = getRoomState(room);
     console.log(`Client ${socket.id} entrato nella room ${room}`);
-    socket.emit("state:update", { type: "state", sender: "server", ...state });
+    socket.emit("state:update", { type: "state", sender: "server", ...makeClientState(state, false) });
     if (typeof ack === "function") ack({ ok: true, room });
   });
 
-  socket.on("state:request", () => {
+  socket.on("state:request", (opts = {}) => {
     const room = getRoomName(socket);
-    const state = syncTopLevel(getRoomState(room));
-    socket.emit("state:update", { type: "state", sender: "server", ...state });
+    const state = getRoomState(room);
+    socket.emit("state:update", {
+      type: "state",
+      sender: "server",
+      ...makeClientState(state, Boolean(opts.full))
+    });
   });
 
   socket.on("state:update", (incoming) => {
@@ -138,21 +171,36 @@ io.on("connection", (socket) => {
     }
 
     if (incoming.scenes) {
+      // Import completo campagna: raro, ma supportato.
       state.scenes = incoming.scenes;
       state.currentSceneId = incoming.currentSceneId || state.currentSceneId;
       syncTopLevel(state);
-    } else {
-      const scene = state.scenes[state.currentSceneId] || Object.values(state.scenes)[0];
-      if (incoming.imgSrc) scene.imgSrc = incoming.imgSrc;
-      if (incoming.map) scene.map = incoming.map;
-      if (incoming.grid) scene.grid = incoming.grid;
-      if (incoming.fogState) scene.fogState = incoming.fogState;
-      if (Array.isArray(incoming.drawings)) scene.drawings = incoming.drawings;
-      if (Array.isArray(incoming.tokens)) scene.tokens = incoming.tokens;
-      syncTopLevel(state);
+      io.to(room).emit("state:update", { type: "state", sender: "master", ...makeClientState(state, true) });
+      return;
     }
 
-    io.to(room).emit("state:update", { type: "state", sender: "master", ...state });
+    const sceneId = incoming.currentSceneId || state.currentSceneId;
+    if (!state.scenes[sceneId]) {
+      state.scenes[sceneId] = { ...makeDefaultScene(), id: sceneId, name: incoming.scene?.name || "Scena" };
+    }
+    state.currentSceneId = sceneId;
+    const scene = state.scenes[sceneId];
+    const src = incoming.scene || incoming;
+
+    if (src.name) scene.name = src.name;
+    if (src.imgSrc) scene.imgSrc = src.imgSrc;
+    if (src.map) scene.map = src.map;
+    if (src.grid) scene.grid = src.grid;
+    if (src.fogState) scene.fogState = src.fogState;
+    if (Array.isArray(src.drawings)) scene.drawings = src.drawings;
+    if (Array.isArray(src.tokens)) scene.tokens = src.tokens;
+    syncTopLevel(state);
+
+    const includeImage = Boolean(src.imgSrc);
+    const outgoing = makeClientState(state, false);
+    if (!includeImage && outgoing.scene) outgoing.scene.imgSrc = null;
+    if (!includeImage) outgoing.imgSrc = null;
+    io.to(room).emit("state:update", { type: "state", sender: "master", ...outgoing });
   });
 
   socket.on("token:move", (data) => {

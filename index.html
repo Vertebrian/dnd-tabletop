@@ -614,7 +614,7 @@ function joinRoom(){
     socket.once('connect', () => joinRoom());
     return;
   }
-  socket.timeout(4000).emit('room:join', room, (err, res)=>{
+  socket.timeout(15000).emit('room:join', room, (err, res)=>{
     if(err){
       $('roomHint').textContent = 'Errore: server non risponde. Ricarica o controlla Render/log.';
       return;
@@ -644,7 +644,7 @@ function setRole(nextRole){
   requestMasterWakeLock();
   requestDraw();
   if(role === 'master') showPanel('map'); else $('toolPanel').classList.add('collapsed');
-  if(currentRoom){ if(role === 'player') requestSync(); else sendState(true); }
+  if(currentRoom){ requestSync(); }
 }
 $('chooseMaster').onclick=()=>setRole('master');
 $('choosePlayer').onclick=()=>setRole('player');
@@ -1229,7 +1229,32 @@ if($('deleteScene')) $('deleteScene').onclick=()=>{
 if($('exportCampaign')) $('exportCampaign').onclick=exportCampaign;
 if($('importCampaign')) $('importCampaign').onchange=e=>{ const f=e.target.files[0]; if(f) importCampaignFile(f).catch(err=>alert('Errore import: '+err.message)); };
 
-function getState(includeImage=false){ captureCurrentScene(); return {type:'state', sender:role, currentSceneId, scenes, imgSrc:includeImage ? imgSrc : null, map, grid, fogState, drawings, tokens}; }
+function getState(includeImage=false){
+  captureCurrentScene();
+  const sc=scenes[currentSceneId] || {id:currentSceneId, name:'Scena', imgSrc, map, grid, fogState, drawings, tokens};
+  const scene={
+    id:currentSceneId,
+    name:sc.name || 'Scena',
+    imgSrc:includeImage ? (sc.imgSrc || imgSrc || null) : null,
+    map,
+    grid,
+    fogState,
+    drawings,
+    tokens
+  };
+  return {
+    type:'state',
+    sender:role,
+    currentSceneId,
+    scene,
+    imgSrc:scene.imgSrc,
+    map,
+    grid,
+    fogState,
+    drawings,
+    tokens
+  };
+}
 function sendState(includeImage=false){
   if(!currentRoom) return;
   if(role !== 'master' && role !== 'player') return;
@@ -1238,7 +1263,24 @@ function sendState(includeImage=false){
   socket.emit('state:update', state);
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
-function requestSync(){ if(currentRoom) socket.emit('state:request'); }
+function requestSync(){ if(currentRoom) socket.emit('state:request', { full: role === 'master' }); }
+function mergeIncomingSceneState(s){
+  ensureScenes();
+  const incoming=s.scene || s;
+  const sid=s.currentSceneId || incoming.id || currentSceneId || 'scene-1';
+  const previous=scenes[sid] || defaultScene(incoming.name || 'Scena');
+  previous.id=sid;
+  previous.name=incoming.name || previous.name || 'Scena';
+  previous.imgSrc=incoming.imgSrc || s.imgSrc || previous.imgSrc || null;
+  previous.map=incoming.map || s.map || previous.map || {x:100,y:80,scale:1,locked:false};
+  previous.grid=incoming.grid || s.grid || previous.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
+  previous.fogState=incoming.fogState || s.fogState || previous.fogState || {base:'dark', strokes:[]};
+  previous.drawings=Array.isArray(incoming.drawings) ? incoming.drawings : (Array.isArray(s.drawings) ? s.drawings : (previous.drawings || []));
+  previous.tokens=Array.isArray(incoming.tokens) ? incoming.tokens : (Array.isArray(s.tokens) ? s.tokens : (previous.tokens || []));
+  scenes[sid]=previous;
+  currentSceneId=sid;
+  applyScene(sid);
+}
 function applyState(s){
   if(!s) return;
   if(role === 'master' && s.sender === 'player'){
@@ -1251,26 +1293,20 @@ function applyState(s){
     requestDraw();
     return;
   }
-  if(role !== 'player' || s.sender === 'player') return;
+  if(s.sender === 'player') return;
+  if(role !== 'master' && role !== 'player') return;
   if(s.scenes){
     scenes=s.scenes;
     currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
     applyScene(currentSceneId);
     return;
   }
-  map=s.map||map;
-  grid=s.grid||grid;
-  if(s.fogState) fogState=s.fogState;
-  if(Array.isArray(s.drawings)) drawings=s.drawings;
-  if(Array.isArray(s.tokens)) tokens=s.tokens;
-  if(s.imgSrc && s.imgSrc!==imgSrc) loadImage(s.imgSrc);
-  captureCurrentScene(); syncInputs(); requestDraw();
+  mergeIncomingSceneState(s);
 }
 socket.on('connect', () => {
   if(currentRoom){
     socket.emit('room:join', currentRoom, () => {
-      if(role === 'player') requestSync();
-      if(role === 'master') sendState(true);
+      requestSync();
     });
   }
 });

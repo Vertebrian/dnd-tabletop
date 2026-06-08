@@ -1,15 +1,11 @@
-D&D TableTop v14 - Disegno + Safety
+D&D TableTop v15 - Fast Sync
 
 Avvio:
 npm install
 npm start
 
-Include:
-- Stanze realtime Master/Player
-- Scene multiple
-- Libreria token selezionabile
-- Disegno Master: penna, rettangolo, cerchio, gomma, colori e dimensioni
-- Salva/Carica campagna JSON
-- Movimento pedine veloce con token:move
-- Popup di conferma se Master/Player provano ad aggiornare o chiudere la pagina
-- Keepalive Socket.IO e Wake Lock per il Master dove supportato
+Novita v15:
+- Sync ottimizzato: non invia piu' tutte le scene e tutte le mappe a ogni modifica.
+- Player riceve solo la scena attiva e la mappa solo quando serve.
+- Cambio scena e caricamento mappa piu' leggeri.
+- Mantiene Disegno Master, Token Library, Scene, Salva/Carica, popup anti-refresh, keepalive e Wake Lock Master.
