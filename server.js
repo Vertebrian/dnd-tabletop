@@ -170,7 +170,7 @@ function makeDefaultScene() {
     imgSrc: null,
     map: { x: 100, y: 80, scale: 1, locked: false },
     grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
-    fogState: { base: "dark", strokes: [] },
+    fogState: { base: "dark", color: "black", strokes: [] },
     drawings: [],
     tokens: []
   };
@@ -316,6 +316,14 @@ function getRoomName(socket) {
   return socket.data.room || "default";
 }
 
+function isMaster(socket) {
+  return socket.data.role === "master";
+}
+
+function isPlayer(socket) {
+  return socket.data.role === "player";
+}
+
 function getRoomState(room) {
   if (!rooms.has(room)) rooms.set(room, emptyState());
   return rooms.get(room);
@@ -347,6 +355,10 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log("Client connesso", socket.id);
 
+  socket.on("role:set", (role) => {
+    socket.data.role = role === "master" ? "master" : "player";
+  });
+
   socket.on("room:join", (rawRoom, ack) => {
     const room = sanitizeRoom(rawRoom);
     if (socket.data.room) socket.leave(socket.data.room);
@@ -373,21 +385,9 @@ io.on("connection", (socket) => {
     const state = getRoomState(room);
     if (!incoming || typeof incoming !== "object") return;
 
-    if (incoming.sender === "player") {
-      const sceneId = incoming.currentSceneId || state.currentSceneId;
-      if (Array.isArray(incoming.tokens)) {
-        const scene = getOrCreateScene(state, sceneId);
-        scene.tokens = sanitizeTokens(incoming.tokens);
-        syncTopLevel(state);
-        socket.to(room).emit("state:update", {
-          type: "state",
-          sender: "player",
-          currentSceneId: sceneId,
-          tokens: scene.tokens
-        });
-      }
-      return;
-    }
+    // Solo il Master puo' modificare lo stato generale della stanza.
+    // Il Player puo' inviare esclusivamente token:move, gestito piu' sotto.
+    if (!isMaster(socket)) return;
 
     if (incoming.scenes && typeof incoming.scenes === "object") {
       // Import completo campagna: raro, ma supportato.
@@ -404,7 +404,7 @@ io.on("connection", (socket) => {
     const scene = getOrCreateScene(state, sceneId, src.name || "Scena");
 
     if (typeof src.name === "string" && src.name.trim()) scene.name = src.name.slice(0, 80);
-    if (hasOwn(src, "imgSrc") && typeof src.imgSrc === "string" && src.imgSrc) scene.imgSrc = src.imgSrc;
+    if (hasOwn(src, "imgSrc")) scene.imgSrc = typeof src.imgSrc === "string" && src.imgSrc ? src.imgSrc : null;
     if (hasOwn(src, "map")) scene.map = sanitizeMap(src.map);
     if (hasOwn(src, "grid")) scene.grid = sanitizeGrid(src.grid);
     if (hasOwn(src, "fogState")) scene.fogState = sanitizeFogState(src.fogState);
@@ -419,6 +419,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("drawing:add", (data) => {
+    if (!isMaster(socket)) return;
     if (!data || typeof data !== "object") return;
     const room = getRoomName(socket);
     const state = getRoomState(room);
@@ -436,6 +437,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("drawings:replace", (data) => {
+    if (!isMaster(socket)) return;
     if (!data || typeof data !== "object") return;
     const room = getRoomName(socket);
     const state = getRoomState(room);
@@ -447,6 +449,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("drawings:clear", (data = {}) => {
+    if (!isMaster(socket)) return;
     const room = getRoomName(socket);
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
@@ -457,6 +460,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("fog:append", (data) => {
+    if (!isMaster(socket)) return;
     if (!data || typeof data !== "object" || !Array.isArray(data.strokes)) return;
     const room = getRoomName(socket);
     const state = getRoomState(room);
@@ -475,20 +479,30 @@ io.on("connection", (socket) => {
 
   socket.on("token:move", (data) => {
     const room = getRoomName(socket);
-    if (!data?.id) return;
+    if (!data?.id || (!isMaster(socket) && !isPlayer(socket))) return;
 
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = state.scenes[sceneId];
-    if (scene && Array.isArray(scene.tokens)) {
-      const token = scene.tokens.find(t => t.id === data.id);
-      if (token) {
-        token.gx = clampNumber(data.gx, -100000, 100000, token.gx || 0);
-        token.gy = clampNumber(data.gy, -100000, 100000, token.gy || 0);
-      }
-    }
+    if (!scene || !Array.isArray(scene.tokens)) return;
 
-    socket.to(room).emit("token:move", data);
+    const token = scene.tokens.find(t => t.id === data.id);
+    if (!token) return;
+
+    // Il Player puo' muovere solo le pedine PG. PNG e qualunque altro
+    // contenuto della scena restano completamente sotto il controllo Master.
+    if (isPlayer(socket) && token.type !== "pg") return;
+
+    token.gx = clampNumber(data.gx, -100000, 100000, token.gx || 0);
+    token.gy = clampNumber(data.gy, -100000, 100000, token.gy || 0);
+    syncTopLevel(state);
+
+    socket.to(room).emit("token:move", {
+      sceneId,
+      id: token.id,
+      gx: token.gx,
+      gy: token.gy
+    });
   });
 
   socket.on("client:keepalive", (data, ack) => {

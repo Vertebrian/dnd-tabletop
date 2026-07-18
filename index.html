@@ -756,6 +756,7 @@ $('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); }
 
 function setRole(nextRole){
   role = nextRole;
+  if(socket.connected) socket.emit('role:set', role);
   $('roleOverlay').style.display='none';
   if($('roleLabel')) $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
   $('roleLabelTop').textContent = role === 'master' ? 'Master' : 'Player';
@@ -1584,11 +1585,9 @@ function getState(includeImage=false, includeDrawings=includeImage){
   return payload;
 }
 function sendState(includeImage=false){
-  if(!currentRoom) return;
-  if(role !== 'master' && role !== 'player') return;
+  if(!currentRoom || role !== 'master') return;
   captureCurrentScene();
-  const state = role === 'player' ? {type:'state', sender:'player', currentSceneId, tokens} : getState(includeImage, includeImage);
-  socket.emit('state:update', state);
+  socket.emit('state:update', getState(includeImage, includeImage));
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
 function requestSync(){ if(currentRoom) socket.emit('state:request', { full: role === 'master' }); }
@@ -1612,16 +1611,8 @@ function mergeIncomingSceneState(s){
 }
 function applyState(s){
   if(!s) return;
-  if(role === 'master' && s.sender === 'player'){
-    const sid=s.currentSceneId || currentSceneId;
-    if(Array.isArray(s.tokens)){
-      if(sid===currentSceneId) tokens=s.tokens;
-      ensureScenes();
-      if(scenes[sid]) scenes[sid].tokens=s.tokens;
-    }
-    requestDraw();
-    return;
-  }
+  // Il Player non invia stati generici: l'unico flusso Player -> Master
+  // consentito e' l'evento dedicato token:move.
   if(s.sender === 'player') return;
   if(role !== 'master' && role !== 'player') return;
   if(s.scenes){
@@ -1636,6 +1627,7 @@ function applyState(s){
 }
 socket.on('connect', () => {
   setConnUi('online');
+  if(role) socket.emit('role:set', role);
   if(currentRoom){
     socket.emit('room:join', currentRoom, () => {
       // Il master, una volta caricato lo stato iniziale, riafferma la
