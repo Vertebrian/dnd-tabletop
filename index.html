@@ -382,6 +382,15 @@ const socket = io({
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
+// Una volta che il master ha caricato lo stato iniziale dal server, non deve
+// mai piu' farselo sovrascrivere: da quel momento e' lui la fonte di verita'.
+// Riconnessioni/resync successivi per il master DEVONO spingere (push) il
+// proprio stato locale al server, mai tirarlo giu' (pull) da li' -
+// altrimenti un resync automatico che arriva anche solo un istante prima
+// che il server abbia registrato l'ultima azione locale (disegno/nebbia)
+// puo' silenziosamente cancellarla solo lato master, mentre il player,
+// che l'aveva gia' ricevuta via broadcast diretto, la mantiene.
+let masterSyncedOnce = false;
 let currentSceneId='scene-1', lastSceneId=null;
 let scenes={};
 let map={x:100,y:80,scale:1,locked:false};
@@ -1619,15 +1628,21 @@ function applyState(s){
     scenes=s.scenes;
     currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
     applyScene(currentSceneId);
+    if(role==='master') masterSyncedOnce = true;
     return;
   }
   mergeIncomingSceneState(s);
+  if(role==='master') masterSyncedOnce = true;
 }
 socket.on('connect', () => {
   setConnUi('online');
   if(currentRoom){
     socket.emit('room:join', currentRoom, () => {
-      requestSync();
+      // Il master, una volta caricato lo stato iniziale, riafferma la
+      // propria copia locale al server invece di tirarne giu' una
+      // eventualmente piu' vecchia (vedi nota su masterSyncedOnce sopra).
+      if(role === 'master' && masterSyncedOnce) sendState(true);
+      else requestSync();
     });
   }
 });
@@ -1658,7 +1673,8 @@ function setConnUi(status){
 function forceResyncIfNeeded(){
   if(!currentRoom) return;
   if(!socket.connected){ socket.connect(); return; }
-  requestSync();
+  if(role === 'master' && masterSyncedOnce) sendState(true);
+  else requestSync();
   requestDraw();
 }
 document.addEventListener('visibilitychange', () => {
