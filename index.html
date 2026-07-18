@@ -307,9 +307,14 @@
           <button id="applyTokenAsset" style="width:100%;margin-top:8px">Applica alla pedina selezionata</button>
         </div>
 
-        <div class="panelSection">
-          <button id="addToken" style="width:100%">Crea pedina</button>
-        </div>
+     <div class="panelSection">
+  <label>Quantità pedine</label>
+  <input id="tokenQuantity" type="number" min="1" max="100" step="1" value="1">
+
+  <button id="addToken" style="width:100%;margin-top:8px">
+    Crea pedina/e
+  </button>
+</div>
         <button id="deleteToken" class="warn" style="width:100%;margin-top:8px">Elimina selezionata</button>
         <small>Le pedine si agganciano sempre al centro delle caselle.</small>
       </section>
@@ -1398,11 +1403,48 @@ $('file').onchange=async e=>{
 };
 
 $('gridMode').onclick=()=>setMode('grid');
-$('addToken').onclick=()=>markChange(()=>{
-  if(role !== 'master') return;
-  const t={ id:'t'+Date.now()+Math.random().toString(16).slice(2), label:$('tokenLabel').value.trim() || 'Pedina', type:$('tokenType').value, w:clamp(+$('tokenW').value||1,1,20), h:clamp(+$('tokenH').value||1,1,20), gx:0, gy:0, icon:selectedTokenAsset?.icon || null, assetId:selectedTokenAsset?.id || null };
-  const center=screenToWorld(W/2,H/2); const c=worldToGridCell(center.x, center.y); t.gx=c.gx; t.gy=c.gy;
-  tokens.push(t); selectedTokenId=t.id; captureCurrentScene(); requestDraw(); sendState(false);
+$('addToken').onclick = () => markChange(() => {
+  if (role !== 'master') return;
+
+  const baseLabel = $('tokenLabel').value.trim() || 'Pedina';
+  const quantity = clamp(+$('tokenQuantity').value || 1, 1, 100);
+  const type = $('tokenType').value;
+  const tokenW = clamp(+$('tokenW').value || 1, 1, 20);
+  const tokenH = clamp(+$('tokenH').value || 1, 1, 20);
+
+  const center = screenToWorld(W / 2, H / 2);
+  const startCell = worldToGridCell(center.x, center.y);
+
+  const columns = Math.ceil(Math.sqrt(quantity));
+  let lastCreatedId = null;
+
+  for (let i = 0; i < quantity; i++) {
+    const row = Math.floor(i / columns);
+    const col = i % columns;
+
+    const token = {
+      id: 't' + Date.now() + '-' + i + '-' + Math.random().toString(16).slice(2),
+      label: quantity === 1
+        ? baseLabel
+        : `${baseLabel} ${i + 1}`,
+      type,
+      w: tokenW,
+      h: tokenH,
+      gx: startCell.gx + col * tokenW,
+      gy: startCell.gy + row * tokenH,
+      icon: selectedTokenAsset?.icon || null,
+      assetId: selectedTokenAsset?.id || null
+    };
+
+    tokens.push(token);
+    lastCreatedId = token.id;
+  }
+
+  selectedTokenId = lastCreatedId;
+
+  captureCurrentScene();
+  requestDraw();
+  sendState(false);
 });
 $('deleteToken').onclick=()=>markChange(()=>{
   if(role !== 'master' || !selectedTokenId) return;
