@@ -764,8 +764,6 @@ function draw(){
   if(img) ctx.drawImage(img, map.x, map.y, img.width*map.scale, img.height*map.scale);
   ctx.restore();
 
-  drawDrawings();
-
   ctx.save();
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
@@ -773,7 +771,10 @@ function draw(){
   drawTokens();
   ctx.restore();
 
+  // La nebbia deve coprire mappa, griglia e pedine, ma non i disegni del Master.
+  // In questo modo annotazioni e forme restano visibili anche al Player.
   drawFogOverlay();
+  drawDrawings();
 }
 
 function drawingCacheFingerprint(){
