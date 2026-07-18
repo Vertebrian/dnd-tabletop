@@ -115,6 +115,7 @@ function sanitizeFogState(fogState) {
   const fog = fogState && typeof fogState === "object" ? fogState : {};
   return {
     base: fog.base === "clear" ? "clear" : "dark",
+    color: fog.color === "white" ? "white" : "black",
     strokes: Array.isArray(fog.strokes)
       ? fog.strokes.slice(-MAX_FOG_STROKES).map(sanitizeFogStroke).filter(Boolean)
       : []
