@@ -703,17 +703,26 @@ function enterRoomUi(room){
   if(role === 'player') requestSync();
   if(role === 'master') sendState(true);
 }
-function joinRoom(){
+function joinRoom(attempt = 1){
   const room = normalizeRoomName($('roomName').value);
   $('roomHint').textContent = 'Connessione alla stanza "' + room + '"...';
   if(!socket.connected){
     $('roomHint').textContent = 'Socket non ancora connesso, riprovo...';
-    socket.once('connect', () => joinRoom());
+    socket.once('connect', () => joinRoom(attempt));
     return;
   }
   socket.timeout(15000).emit('room:join', room, (err, res)=>{
     if(err){
-      $('roomHint').textContent = 'Errore: server non risponde. Ricarica o controlla Render/log.';
+      // Un errore qui e' spesso solo un intoppo momentaneo (es. la
+      // connessione e' caduta un istante proprio mentre si tentava
+      // l'ingresso in stanza). Ritentiamo un paio di volte da soli
+      // prima di arrendersi, cosi' l'utente non deve ricaricare a mano.
+      if(attempt < 3){
+        $('roomHint').textContent = 'Connessione instabile, ritento (' + attempt + '/3)...';
+        setTimeout(() => joinRoom(attempt + 1), 800 * attempt);
+        return;
+      }
+      $('roomHint').textContent = 'Errore: server non risponde dopo 3 tentativi. Ricarica o controlla Render/log.';
       return;
     }
     enterRoomUi(res?.room || room);
@@ -1587,7 +1596,15 @@ socket.on('connect', () => {
     });
   }
 });
-socket.on('disconnect', () => setConnUi('offline'));
+socket.on('disconnect', (reason) => {
+  setConnUi('offline');
+  // Su una disconnessione "io server disconnect" (es. il server chiude
+  // esplicitamente il socket) Socket.IO NON riconnette da solo: va
+  // richiesto a mano, altrimenti il client resta bloccato disconnesso.
+  if(reason === 'io server disconnect'){
+    socket.connect();
+  }
+});
 socket.on('reconnect_attempt', () => setConnUi('reconnecting'));
 socket.on('state:update', state => applyState(state));
 

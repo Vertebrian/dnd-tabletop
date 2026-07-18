@@ -9,14 +9,13 @@ const io = new Server(server, {
   // Le mappe in base64 possono essere grandi, ma gli aggiornamenti frequenti
   // ora viaggiano come delta piccoli invece che come stato completo.
   maxHttpBufferSize: 20 * 1024 * 1024,
-  // Timer di heartbeat piu' stretti: una connessione morta in silenzio
-  // (WiFi in risparmio energia, NAT/router che chiude socket idle, proxy
-  // di hosting che droppano websocket inattivi) viene rilevata entro
-  // ~8-12s invece che fino a 60s. Finche' non viene rilevata, i client
-  // sembrano "connessi" ma non ricevono nulla: e' la causa dei ritardi
-  // di sync di ~1 minuto lato player.
-  pingInterval: 8000,
-  pingTimeout: 12000,
+  // Timer di heartbeat: abbastanza stretti da rilevare una connessione
+  // morta in silenzio entro ~15-25s (invece che fino a 60s), ma non cosi'
+  // aggressivi da scambiare un normale rallentamento di rete per una
+  // disconnessione (cosa che causava falsi "server non risponde" al
+  // rientro in stanza).
+  pingInterval: 15000,
+  pingTimeout: 25000,
   cors: { origin: "*" }
 });
 
