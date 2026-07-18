@@ -20,9 +20,7 @@ const io = new Server(server, {
 });
 
 const rooms = new Map();
-const roomOperations = new Map();
 
-const MAX_RECENT_OPERATIONS = 2000;
 const MAX_DRAWINGS = 3000;
 const MAX_POINTS_PER_DRAWING = 1200;
 const MAX_FOG_STROKES = 5000;
@@ -36,10 +34,6 @@ function clampNumber(value, min, max, fallback) {
 
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
-}
-
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function makeId(prefix = "id") {
@@ -176,7 +170,7 @@ function makeDefaultScene() {
     imgSrc: null,
     map: { x: 100, y: 80, scale: 1, locked: false },
     grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
-    fogState: { base: "dark", color: "black", strokes: [] },
+    fogState: { base: "dark", strokes: [] },
     drawings: [],
     tokens: []
   };
@@ -199,7 +193,6 @@ function sanitizeScene(scene, fallbackId = "scene-1") {
 function emptyState() {
   const scene = makeDefaultScene();
   return {
-    revision: 0,
     currentSceneId: scene.id,
     scenes: { [scene.id]: scene },
     imgSrc: scene.imgSrc,
@@ -213,7 +206,6 @@ function emptyState() {
 
 function normalizeState(state) {
   if (!state || typeof state !== "object") state = emptyState();
-  state.revision = clampNumber(state.revision, 0, Number.MAX_SAFE_INTEGER, 0);
   if (!state.scenes || typeof state.scenes !== "object") {
     const scene = sanitizeScene({
       id: "scene-1",
@@ -260,13 +252,7 @@ function syncTopLevel(state) {
 }
 
 function makeClientState(state, includeAllScenes = false) {
-  // Lo stato viene gia' sanitizzato all'ingresso di ogni mutazione. Evitiamo
-  // di risanitizzare tutte le scene a ogni semplice resync/focus del browser.
-  if (!state || !state.scenes || typeof state.scenes !== "object" || !state.scenes[state.currentSceneId]) {
-    normalizeState(state);
-  } else {
-    syncTopLevel(state);
-  }
+  normalizeState(state);
   const scene = state.scenes[state.currentSceneId] || Object.values(state.scenes)[0] || makeDefaultScene();
   const scenePayload = {
     id: scene.id,
@@ -280,7 +266,6 @@ function makeClientState(state, includeAllScenes = false) {
   };
 
   const out = {
-    revision: state.revision || 0,
     currentSceneId: scene.id,
     scene: scenePayload,
     imgSrc: scenePayload.imgSrc,
@@ -291,22 +276,14 @@ function makeClientState(state, includeAllScenes = false) {
     tokens: scenePayload.tokens
   };
 
-  if (includeAllScenes) {
-    // applyState() usa direttamente scenes: evitiamo di duplicare nel wire
-    // anche tutta la scena attiva (immagine, fog, disegni e pedine).
-    return {
-      revision: state.revision || 0,
-      currentSceneId: scene.id,
-      scenes: state.scenes
-    };
-  }
+  if (includeAllScenes) out.scenes = state.scenes;
   return out;
 }
 
 function makePartialClientState(state, sceneId, src, opts = {}) {
   const scene = state.scenes?.[sceneId] || state.scenes?.[state.currentSceneId] || Object.values(state.scenes || {})[0] || makeDefaultScene();
   const scenePayload = { id: scene.id, name: scene.name };
-  const out = { revision: state.revision || 0, currentSceneId: scene.id, scene: scenePayload };
+  const out = { currentSceneId: scene.id, scene: scenePayload };
 
   if (opts.includeImage) {
     scenePayload.imgSrc = scene.imgSrc || null;
@@ -336,57 +313,7 @@ function makePartialClientState(state, sceneId, src, opts = {}) {
 }
 
 function getRoomName(socket) {
-  return socket.data.room || null;
-}
-
-function bumpRevision(state) {
-  state.revision = clampNumber((state.revision || 0) + 1, 0, Number.MAX_SAFE_INTEGER, 1);
-  return state.revision;
-}
-
-function reply(ack, payload) {
-  if (typeof ack === "function") ack(payload);
-}
-
-function roomReady(socket, ack) {
-  const room = getRoomName(socket);
-  if (room) return room;
-  reply(ack, { ok: false, error: "room-not-joined" });
-  return null;
-}
-
-function mergeTokenStructure(currentTokens, incomingTokens) {
-  const currentById = new Map((currentTokens || []).map((token) => [token.id, token]));
-  return incomingTokens.map((token) => {
-    const current = currentById.get(token.id);
-    if (!current) return token;
-    return { ...token, gx: current.gx, gy: current.gy };
-  });
-}
-
-function acceptOperation(room, data, state, ack) {
-  const opId = typeof data?._opId === "string" ? data._opId.slice(0, 180) : "";
-  if (!opId) return true;
-  if (!roomOperations.has(room)) roomOperations.set(room, { ids: new Set(), order: [] });
-  const cache = roomOperations.get(room);
-  if (cache.ids.has(opId)) {
-    reply(ack, { ok: true, duplicate: true, revision: state.revision || 0 });
-    return false;
-  }
-  cache.ids.add(opId);
-  cache.order.push(opId);
-  while (cache.order.length > MAX_RECENT_OPERATIONS) {
-    cache.ids.delete(cache.order.shift());
-  }
-  return true;
-}
-
-function isMaster(socket) {
-  return socket.data.role === "master";
-}
-
-function isPlayer(socket) {
-  return socket.data.role === "player";
+  return socket.data.room || "default";
 }
 
 function getRoomState(room) {
@@ -412,25 +339,13 @@ function sanitizeRoom(room) {
 }
 
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/assets", express.static(path.join(__dirname, "assets")));
+app.use(express.static(__dirname));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
 io.on("connection", (socket) => {
   console.log("Client connesso", socket.id);
-
-  socket.on("role:set", (role, ack) => {
-    const nextRole = role === "master" ? "master" : "player";
-    // Il ruolo e' immutabile per tutta la vita del socket: chi e' entrato
-    // come Player non puo' promuoversi a Master con un evento manuale.
-    if (socket.data.role && socket.data.role !== nextRole) {
-      reply(ack, { ok: false, error: "role-locked", role: socket.data.role });
-      return;
-    }
-    socket.data.role = nextRole;
-    reply(ack, { ok: true, role: nextRole });
-  });
 
   socket.on("room:join", (rawRoom, ack) => {
     const room = sanitizeRoom(rawRoom);
@@ -439,310 +354,146 @@ io.on("connection", (socket) => {
     socket.join(room);
     const state = getRoomState(room);
     console.log(`Client ${socket.id} entrato nella room ${room}`);
-    // Il ruolo e' gia' stato registrato durante l'handshake applicativo.
-    // Al Master inviamo tutte le scene una sola volta qui; al Player basta la
-    // scena corrente. La successiva verifica per revisione non reinvia dati.
-    socket.emit("state:update", { type: "state", sender: "server", ...makeClientState(state, isMaster(socket)) });
-    reply(ack, { ok: true, room, revision: state.revision || 0 });
+    socket.emit("state:update", { type: "state", sender: "server", ...makeClientState(state, false) });
+    if (typeof ack === "function") ack({ ok: true, room });
   });
 
-  socket.on("state:request", (opts = {}, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isRecord(opts)) opts = {};
+  socket.on("state:request", (opts = {}) => {
+    const room = getRoomName(socket);
     const state = getRoomState(room);
-    const sinceRevision = Number(opts.sinceRevision);
-    if (!opts.full && Number.isFinite(sinceRevision) && sinceRevision === (state.revision || 0)) {
-      reply(ack, { ok: true, unchanged: true, revision: state.revision || 0 });
-      return;
-    }
     socket.emit("state:update", {
       type: "state",
       sender: "server",
       ...makeClientState(state, Boolean(opts.full))
     });
-    reply(ack, { ok: true, revision: state.revision || 0 });
   });
 
-  socket.on("state:update", (incoming, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
+  socket.on("state:update", (incoming) => {
+    const room = getRoomName(socket);
     const state = getRoomState(room);
-    if (!isRecord(incoming)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
+    if (!incoming || typeof incoming !== "object") return;
+
+    if (incoming.sender === "player") {
+      const sceneId = incoming.currentSceneId || state.currentSceneId;
+      if (Array.isArray(incoming.tokens)) {
+        const scene = getOrCreateScene(state, sceneId);
+        scene.tokens = sanitizeTokens(incoming.tokens);
+        syncTopLevel(state);
+        socket.to(room).emit("state:update", {
+          type: "state",
+          sender: "player",
+          currentSceneId: sceneId,
+          tokens: scene.tokens
+        });
+      }
       return;
     }
 
-    // Solo il Master puo' modificare lo stato generale della stanza.
-    // Il Player puo' inviare esclusivamente token:move, gestito piu' sotto.
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!acceptOperation(room, incoming, state, ack)) return;
-
-    if (isRecord(incoming.scenes)) {
-      // Import/sostituzione completa campagna: operazione rara e intenzionale.
+    if (incoming.scenes && typeof incoming.scenes === "object") {
+      // Import completo campagna: raro, ma supportato.
       state.scenes = incoming.scenes;
       state.currentSceneId = incoming.currentSceneId || state.currentSceneId;
       normalizeState(state);
-      bumpRevision(state);
       socket.to(room).emit("state:update", { type: "state", sender: "master", ...makeClientState(state, true) });
-      reply(ack, { ok: true, revision: state.revision });
       return;
     }
 
     const src = incoming.scene || incoming;
-    const sceneId = String(incoming.currentSceneId || src.id || state.currentSceneId || "scene-1").slice(0, 120);
+    const sceneId = incoming.currentSceneId || src.id || state.currentSceneId;
     state.currentSceneId = sceneId;
-
-    if (incoming.kind === "scene:replace") {
-      const cleanScene = sanitizeScene({ ...src, id: sceneId }, sceneId);
-      state.scenes[sceneId] = cleanScene;
-      syncTopLevel(state);
-      bumpRevision(state);
-      socket.to(room).emit("state:update", { type: "state", sender: "master", ...makeClientState(state, false) });
-      reply(ack, { ok: true, revision: state.revision });
-      return;
-    }
-
     const scene = getOrCreateScene(state, sceneId, src.name || "Scena");
-    const explicitFields = Array.isArray(incoming.fields)
-      ? new Set(incoming.fields.filter((field) => ["name", "imgSrc", "map", "grid", "fogState"].includes(field)))
-      : null;
-    const wants = (field) => explicitFields ? explicitFields.has(field) : hasOwn(src, field);
-    let changed = false;
 
-    if (wants("name") && typeof src.name === "string" && src.name.trim()) {
-      scene.name = src.name.slice(0, 80);
-      changed = true;
-    }
-    if (wants("imgSrc") && hasOwn(src, "imgSrc")) {
-      scene.imgSrc = typeof src.imgSrc === "string" && src.imgSrc ? src.imgSrc : null;
-      changed = true;
-    }
-    if (wants("map") && hasOwn(src, "map")) {
-      scene.map = sanitizeMap(src.map);
-      changed = true;
-    }
-    if (wants("grid") && hasOwn(src, "grid")) {
-      scene.grid = sanitizeGrid(src.grid);
-      changed = true;
-    }
-    if (wants("fogState") && hasOwn(src, "fogState")) {
-      scene.fogState = sanitizeFogState(src.fogState);
-      changed = true;
-    }
-
-    // Disegni e pedine hanno eventi dedicati. In questo modo un semplice
-    // movimento della mappa non puo' sovrascrivere coordinate PG appena
-    // ricevute dal Player con una copia locale piu' vecchia del Master.
-    if (!changed) {
-      reply(ack, { ok: true, revision: state.revision || 0, noop: true });
-      return;
-    }
-
+    if (typeof src.name === "string" && src.name.trim()) scene.name = src.name.slice(0, 80);
+    if (hasOwn(src, "imgSrc") && typeof src.imgSrc === "string" && src.imgSrc) scene.imgSrc = src.imgSrc;
+    if (hasOwn(src, "map")) scene.map = sanitizeMap(src.map);
+    if (hasOwn(src, "grid")) scene.grid = sanitizeGrid(src.grid);
+    if (hasOwn(src, "fogState")) scene.fogState = sanitizeFogState(src.fogState);
+    if (hasOwn(src, "drawings") && Array.isArray(src.drawings)) scene.drawings = sanitizeDrawings(src.drawings);
+    if (hasOwn(src, "tokens") && Array.isArray(src.tokens)) scene.tokens = sanitizeTokens(src.tokens);
     syncTopLevel(state);
-    bumpRevision(state);
-    const outgoing = makePartialClientState(state, sceneId, src, {
-      includeImage: wants("imgSrc") && hasOwn(src, "imgSrc"),
-      includeDrawings: false
-    });
+
+    const includeImage = Boolean(hasOwn(src, "imgSrc") && src.imgSrc);
+    const includeDrawings = Array.isArray(src.drawings);
+    const outgoing = makePartialClientState(state, sceneId, src, { includeImage, includeDrawings });
     socket.to(room).emit("state:update", { type: "state", sender: "master", ...outgoing });
-    reply(ack, { ok: true, revision: state.revision });
   });
 
-  socket.on("tokens:sync", (data, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!isRecord(data) || !Array.isArray(data.tokens)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
-      return;
-    }
-    const state = getRoomState(room);
-    if (!acceptOperation(room, data, state, ack)) return;
-    const sceneId = String(data.sceneId || state.currentSceneId || "scene-1").slice(0, 120);
-    const scene = getOrCreateScene(state, sceneId);
-    const cleanTokens = sanitizeTokens(data.tokens);
-    scene.tokens = data.mode === "structure"
-      ? mergeTokenStructure(scene.tokens, cleanTokens)
-      : cleanTokens;
-    state.currentSceneId = sceneId;
-    syncTopLevel(state);
-    bumpRevision(state);
-    socket.to(room).emit("tokens:replace", {
-      sender: "master",
-      revision: state.revision,
-      sceneId,
-      tokens: scene.tokens
-    });
-    reply(ack, { ok: true, revision: state.revision });
-  });
-
-  socket.on("drawing:add", (data, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!isRecord(data)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
-      return;
-    }
+  socket.on("drawing:add", (data) => {
+    if (!data || typeof data !== "object") return;
+    const room = getRoomName(socket);
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = getOrCreateScene(state, sceneId);
     const drawing = sanitizeDrawing(data.drawing);
-    if (!drawing) {
-      reply(ack, { ok: false, error: "invalid-drawing" });
-      return;
-    }
-    if (!acceptOperation(room, data, state, ack)) return;
+    if (!drawing) return;
 
     if (!scene.drawings.some((d) => d.id && d.id === drawing.id)) {
       scene.drawings.push(drawing);
       if (scene.drawings.length > MAX_DRAWINGS) scene.drawings.splice(0, scene.drawings.length - MAX_DRAWINGS);
       syncTopLevel(state);
-      bumpRevision(state);
     }
-    socket.to(room).emit("drawing:add", { sender: "master", revision: state.revision, sceneId, drawing });
-    reply(ack, { ok: true, revision: state.revision });
+    socket.to(room).emit("drawing:add", { sender: "master", sceneId, drawing });
   });
 
-  socket.on("drawings:replace", (data, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!isRecord(data)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
-      return;
-    }
+  socket.on("drawings:replace", (data) => {
+    if (!data || typeof data !== "object") return;
+    const room = getRoomName(socket);
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = getOrCreateScene(state, sceneId);
-    if (!acceptOperation(room, data, state, ack)) return;
     scene.drawings = sanitizeDrawings(data.drawings);
     syncTopLevel(state);
-    bumpRevision(state);
-    socket.to(room).emit("drawings:replace", { sender: "master", revision: state.revision, sceneId, drawings: scene.drawings });
-    reply(ack, { ok: true, revision: state.revision });
+    socket.to(room).emit("drawings:replace", { sender: "master", sceneId, drawings: scene.drawings });
   });
 
-  socket.on("drawings:clear", (data = {}, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!isRecord(data)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
-      return;
-    }
+  socket.on("drawings:clear", (data = {}) => {
+    const room = getRoomName(socket);
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = getOrCreateScene(state, sceneId);
-    if (!acceptOperation(room, data, state, ack)) return;
     scene.drawings = [];
     syncTopLevel(state);
-    bumpRevision(state);
-    socket.to(room).emit("drawings:clear", { sender: "master", revision: state.revision, sceneId });
-    reply(ack, { ok: true, revision: state.revision });
+    socket.to(room).emit("drawings:clear", { sender: "master", sceneId });
   });
 
-  socket.on("fog:append", (data, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!isMaster(socket)) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
-    if (!isRecord(data) || !Array.isArray(data.strokes)) {
-      reply(ack, { ok: false, error: "invalid-payload" });
-      return;
-    }
+  socket.on("fog:append", (data) => {
+    if (!data || typeof data !== "object" || !Array.isArray(data.strokes)) return;
+    const room = getRoomName(socket);
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = getOrCreateScene(state, sceneId);
     const strokes = data.strokes.map(sanitizeFogStroke).filter(Boolean);
-    if (!strokes.length) {
-      reply(ack, { ok: true, revision: state.revision || 0, noop: true });
-      return;
-    }
-    if (!acceptOperation(room, data, state, ack)) return;
+    if (!strokes.length) return;
     scene.fogState = sanitizeFogState(scene.fogState);
     scene.fogState.strokes.push(...strokes);
     if (scene.fogState.strokes.length > MAX_FOG_STROKES) {
       scene.fogState.strokes.splice(0, scene.fogState.strokes.length - MAX_FOG_STROKES);
     }
     syncTopLevel(state);
-    bumpRevision(state);
-    socket.to(room).emit("fog:append", { sender: "master", revision: state.revision, sceneId, strokes });
-    reply(ack, { ok: true, revision: state.revision });
+    socket.to(room).emit("fog:append", { sender: "master", sceneId, strokes });
   });
 
-  socket.on("token:move", (data, ack) => {
-    const room = roomReady(socket, ack);
-    if (!room) return;
-    if (!data?.id || (!isMaster(socket) && !isPlayer(socket))) {
-      reply(ack, { ok: false, error: "forbidden" });
-      return;
-    }
+  socket.on("token:move", (data) => {
+    const room = getRoomName(socket);
+    if (!data?.id) return;
 
     const state = getRoomState(room);
     const sceneId = data.sceneId || state.currentSceneId;
     const scene = state.scenes[sceneId];
-    if (!scene || !Array.isArray(scene.tokens)) {
-      reply(ack, { ok: false, error: "scene-not-found" });
-      return;
+    if (scene && Array.isArray(scene.tokens)) {
+      const token = scene.tokens.find(t => t.id === data.id);
+      if (token) {
+        token.gx = clampNumber(data.gx, -100000, 100000, token.gx || 0);
+        token.gy = clampNumber(data.gy, -100000, 100000, token.gy || 0);
+      }
     }
 
-    const token = scene.tokens.find((item) => item.id === data.id);
-    if (!token) {
-      reply(ack, { ok: false, error: "token-not-found" });
-      return;
-    }
-
-    // Il Player puo' muovere solo le pedine PG. PNG e qualunque altro
-    // contenuto della scena restano completamente sotto il controllo Master.
-    if (isPlayer(socket) && token.type !== "pg") {
-      reply(ack, { ok: false, error: "token-forbidden" });
-      return;
-    }
-    if (!acceptOperation(room, data, state, ack)) return;
-
-    token.gx = clampNumber(data.gx, -100000, 100000, token.gx || 0);
-    token.gy = clampNumber(data.gy, -100000, 100000, token.gy || 0);
-    syncTopLevel(state);
-    bumpRevision(state);
-
-    const payload = {
-      sender: socket.data.role,
-      revision: state.revision,
-      sceneId,
-      id: token.id,
-      gx: token.gx,
-      gy: token.gy,
-      seq: clampNumber(data.seq, 0, Number.MAX_SAFE_INTEGER, 0),
-      final: data.final !== false
-    };
-    const broadcaster = socket.to(room);
-    if (data.final === false && broadcaster.volatile) broadcaster.volatile.emit("token:move", payload);
-    else broadcaster.emit("token:move", payload);
-    reply(ack, { ok: true, revision: state.revision, gx: token.gx, gy: token.gy });
+    socket.to(room).emit("token:move", data);
   });
 
   socket.on("client:keepalive", (data, ack) => {
     socket.data.lastKeepalive = Date.now();
-    reply(ack, { ok: true });
+    if (typeof ack === "function") ack({ ok: true });
   });
 
   socket.on("disconnect", () => {

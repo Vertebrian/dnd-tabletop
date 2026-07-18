@@ -382,14 +382,15 @@ const socket = io({
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
-// Il server e' la copia canonica. Le modifiche frequenti viaggiano come delta
-// piccoli; dopo una riconnessione entrambi i ruoli rileggono lo stato server e
-// poi riproducono soltanto le operazioni locali rimaste in coda.
-let sessionReady=false, sessionEstablishing=false;
-let lastServerRevision=0, tokenMoveSeq=0, reliableOpSeq=0;
-let reliableOutbox=[];
-const latestReliableOrderByKey=new Map();
-let reliableRetryTimer=null;
+// Una volta che il master ha caricato lo stato iniziale dal server, non deve
+// mai piu' farselo sovrascrivere: da quel momento e' lui la fonte di verita'.
+// Riconnessioni/resync successivi per il master DEVONO spingere (push) il
+// proprio stato locale al server, mai tirarlo giu' (pull) da li' -
+// altrimenti un resync automatico che arriva anche solo un istante prima
+// che il server abbia registrato l'ultima azione locale (disegno/nebbia)
+// puo' silenziosamente cancellarla solo lato master, mentre il player,
+// che l'aveva gia' ricevuta via broadcast diretto, la mantiene.
+let masterSyncedOnce = false;
 let currentSceneId='scene-1', lastSceneId=null;
 let scenes={};
 let map={x:100,y:80,scale:1,locked:false};
@@ -404,11 +405,10 @@ let tokens=[];
 let selectedTokenId=null;
 let fogState={base:'dark', color:'black', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
 let syncTimer=null, rafPending=false;
-let pendingStateFields=new Set();
 let history=[], historyIndex=-1, dragSnapshot=null;
 let drawingGestureSnapshot=null, drawingsDirtyDuringGesture=false;
 let fogGestureStartLen=null, pendingFogStrokes=[], fogBatchTimer=null;
-let pendingTokenMove=null, lastTokenMove=null, tokenMoveTimer=null;
+let pendingTokenMove=null, tokenMoveTimer=null;
 let selectedTokenAsset=null;
 let imageLoadSeq=0;
 let drawingsVersion=0, drawingCacheKey='';
@@ -507,9 +507,7 @@ function renderTokenLibrary(){
 }
 
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
-function hasOwn(obj,key){ return Object.prototype.hasOwnProperty.call(obj || {}, key); }
 function makeId(prefix='id'){ return prefix + Date.now() + Math.random().toString(16).slice(2); }
-const syncClientId=makeId('client-');
 function cloneJson(value){
   if(typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
@@ -533,36 +531,18 @@ function trimFogStore(){
   if(fogState?.strokes?.length > MAX_FOG_STROKES) fogState.strokes.splice(0, fogState.strokes.length - MAX_FOG_STROKES);
 }
 function cloneDrawings(){ return cloneJson(drawings); }
-function cloneCore(){ return cloneJson({map, grid, fogState, tokens}); }
-function mergeTokenStructureLocally(targetTokens, currentTokens){
-  const currentById=new Map((currentTokens || []).map(token=>[token.id, token]));
-  return (targetTokens || []).map(token=>{
-    const current=currentById.get(token.id);
-    return current ? {...cloneJson(token), gx:current.gx, gy:current.gy} : cloneJson(token);
-  });
-}
+function cloneCore(){ return cloneJson({map, grid, fogState, tokens, selectedTokenId}); }
 function restoreCore(st){
   if(!st) return;
-  const fields=[];
-  let tokensChanged=false;
-  if(hasOwn(st,'map')){ map=cloneJson(st.map); fields.push('map'); }
-  if(hasOwn(st,'grid')){ grid=cloneJson(st.grid); fields.push('grid'); }
-  if(hasOwn(st,'fogState')){ fogState=cloneJson(st.fogState); fields.push('fogState'); }
-  if(hasOwn(st,'tokens')){
-    // Lo storico delle pedine qui riguarda struttura/aspetto (crea, elimina,
-    // icona, etichetta). Le coordinate correnti degli ID ancora presenti
-    // vengono mantenute, per non annullare movimenti Player avvenuti dopo.
-    tokens=mergeTokenStructureLocally(Array.isArray(st.tokens) ? st.tokens : [], tokens);
-    tokensChanged=true;
-  }
-  if(selectedTokenId && !tokens.some(t=>t.id===selectedTokenId)) selectedTokenId=null;
+  map=cloneJson(st.map || map);
+  grid=cloneJson(st.grid || grid);
+  fogState=cloneJson(st.fogState || fogState);
+  tokens=Array.isArray(st.tokens) ? cloneJson(st.tokens) : [];
+  selectedTokenId=st.selectedTokenId || null;
   trimFogStore();
-  captureCurrentScene(); syncInputs(); requestDraw();
-  if(role==='master'){
-    if(fields.length) sendStatePatch(fields);
-    if(tokensChanged) sendTokensSync('structure');
-  }
+  captureCurrentScene(); syncInputs(); requestDraw(); if(role==='master') sendState(false);
 }
+function sameCore(a,b){ return JSON.stringify(a) === JSON.stringify(b); }
 function pushHistoryRecord(record){
   if(role !== 'master' || !record) return;
   history=history.slice(0, historyIndex+1);
@@ -582,25 +562,9 @@ function pushHistory(){
 }
 function commitHistory(before){
   if(role !== 'master' || !before) return;
-  if(before.type==='tokenMove'){
-    const token=tokens.find(item=>item.id===before.id);
-    if(!token) return;
-    const after={gx:token.gx, gy:token.gy};
-    if(before.before.gx===after.gx && before.before.gy===after.gy) return;
-    pushHistoryRecord({type:'tokenMove', id:before.id, before:before.before, after});
-    return;
-  }
   const after=cloneCore();
-  const beforeChanged={}, afterChanged={};
-  for(const field of ['map','grid','fogState','tokens']){
-    if(!hasOwn(before,field)) continue;
-    if(JSON.stringify(before[field]) !== JSON.stringify(after[field])){
-      beforeChanged[field]=before[field];
-      afterChanged[field]=after[field];
-    }
-  }
-  if(!Object.keys(afterChanged).length) return;
-  pushHistoryRecord({type:'core', before:beforeChanged, after:afterChanged});
+  if(sameCore(before, after)) return;
+  pushHistoryRecord({type:'core', before, after});
 }
 function applyHistoryRecord(record, direction){
   if(!record) return;
@@ -622,22 +586,7 @@ function applyHistoryRecord(record, direction){
     const count=record.strokes?.length || 0;
     if(undoing && count) fogState.strokes.splice(Math.max(0, fogState.strokes.length-count), count);
     else if(!undoing && count) fogState.strokes.push(...cloneJson(record.strokes));
-    trimFogStore(); captureCurrentScene(); requestDraw(); sendStatePatch(['fogState']);
-  } else if(record.type === 'tokenMove'){
-    const token=tokens.find(item=>item.id===record.id);
-    const position=undoing ? record.before : record.after;
-    if(!token || !position) return;
-    token.gx=position.gx;
-    token.gy=position.gy;
-    captureCurrentScene(); requestDraw();
-    emitReliable('token:move', {
-      sceneId:currentSceneId,
-      id:token.id,
-      gx:token.gx,
-      gy:token.gy,
-      seq:++tokenMoveSeq,
-      final:true
-    }, 'token:'+currentSceneId+':'+token.id);
+    trimFogStore(); captureCurrentScene(); requestDraw(); sendState(false);
   }
 }
 function undo(){
@@ -720,7 +669,7 @@ function switchScene(sceneId){
   captureCurrentScene();
   lastSceneId=currentSceneId;
   applyScene(sceneId);
-  if(role==='master') sendSceneReplace();
+  if(role==='master') sendState(true);
 }
 function makeCampaignPayload(){
   captureCurrentScene();
@@ -736,7 +685,7 @@ function loadCampaignPayload(payload){
     scenes={ [currentSceneId]:{id:currentSceneId,name:'Scena 1',imgSrc:payload.imgSrc||null,map:payload.map,grid:payload.grid,fogState:payload.fogState,drawings:payload.drawings||[],tokens:payload.tokens||[]} };
   }
   applyScene(currentSceneId);
-  if(role==='master') sendCampaignReplace();
+  if(role==='master') sendState(true);
 }
 function exportCampaign(){
   const payload=makeCampaignPayload();
@@ -761,29 +710,15 @@ function normalizeRoomName(v){
   return String(v || 'default').trim().toLowerCase().replace(/[^a-z0-9_-]/g,'-').replace(/-+/g,'-').slice(0,40) || 'default';
 }
 function enterRoomUi(room){
-  const roomChanged=currentRoom!==room;
   currentRoom = room;
-  if(roomChanged){
-    if(syncTimer){ clearTimeout(syncTimer); syncTimer=null; }
-    if(fogBatchTimer){ clearTimeout(fogBatchTimer); fogBatchTimer=null; }
-    if(tokenMoveTimer){ clearTimeout(tokenMoveTimer); tokenMoveTimer=null; }
-    if(reliableRetryTimer){ clearTimeout(reliableRetryTimer); reliableRetryTimer=null; }
-    lastServerRevision=0;
-    reliableOutbox=[];
-    latestReliableOrderByKey.clear();
-    pendingStateFields.clear();
-    pendingFogStrokes=[];
-    pendingTokenMove=null;
-    lastTokenMove=null;
-  }
-  sessionReady = false;
   $('roomOverlay').style.display='none';
   $('roleOverlay').style.display='flex';
   const url = new URL(window.location.href);
   url.searchParams.set('room', currentRoom);
   window.history.replaceState(null, '', url.toString());
   $('roomHint').textContent = 'Stanza attiva: ' + currentRoom;
-  if(role) establishSession();
+  if(role === 'player') requestSync();
+  if(role === 'master') sendState(true);
 }
 function joinRoom(attempt = 1){
   const room = normalizeRoomName($('roomName').value);
@@ -821,7 +756,6 @@ $('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); }
 
 function setRole(nextRole){
   role = nextRole;
-  sessionReady=false;
   $('roleOverlay').style.display='none';
   if($('roleLabel')) $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
   $('roleLabelTop').textContent = role === 'master' ? 'Master' : 'Player';
@@ -833,7 +767,7 @@ function setRole(nextRole){
   requestMasterWakeLock();
   requestDraw();
   if(role === 'master') showPanel('map'); else $('toolPanel').classList.add('collapsed');
-  if(currentRoom) establishSession();
+  if(currentRoom){ requestSync(); }
 }
 $('chooseMaster').onclick=()=>setRole('master');
 $('choosePlayer').onclick=()=>setRole('player');
@@ -1008,15 +942,15 @@ function normalizeDrawingForWire(d){
 }
 function emitDrawingAdd(d){
   if(role !== 'master' || !currentRoom || !d) return;
-  emitReliable('drawing:add', { sceneId:currentSceneId, drawing:normalizeDrawingForWire(d) });
+  socket.emit('drawing:add', { sceneId:currentSceneId, drawing:normalizeDrawingForWire(d) });
 }
 function emitDrawingsReplace(){
   if(role !== 'master' || !currentRoom) return;
-  emitReliable('drawings:replace', { sceneId:currentSceneId, drawings:drawings.map(normalizeDrawingForWire) }, 'drawings:'+currentSceneId);
+  socket.emit('drawings:replace', { sceneId:currentSceneId, drawings:drawings.map(normalizeDrawingForWire) });
 }
 function emitDrawingsClear(){
   if(role !== 'master' || !currentRoom) return;
-  emitReliable('drawings:clear', { sceneId:currentSceneId }, 'drawings:'+currentSceneId);
+  socket.emit('drawings:clear', { sceneId:currentSceneId });
 }
 function eraseDrawingAtPoint(p){
   const before=drawings.length;
@@ -1166,23 +1100,14 @@ function tokenAt(wx, wy){
 }
 function queueTokenMove(data){
   pendingTokenMove=data;
-  lastTokenMove=data;
   if(tokenMoveTimer) return;
-  // Circa 25 fps: movimento fluido senza creare una coda di pacchetti su Render.
-  tokenMoveTimer=setTimeout(()=>flushTokenMove(false), 40);
+  tokenMoveTimer=setTimeout(flushTokenMove, 50);
 }
-function flushTokenMove(final=false){
+function flushTokenMove(){
   if(tokenMoveTimer){ clearTimeout(tokenMoveTimer); tokenMoveTimer=null; }
-  const data=pendingTokenMove || (final ? lastTokenMove : null);
+  if(!pendingTokenMove) return;
+  socket.emit('token:move', pendingTokenMove);
   pendingTokenMove=null;
-  if(!data) return;
-  const payload={...data, seq:++tokenMoveSeq, final};
-  if(final){
-    emitReliable('token:move', payload, 'token:'+payload.sceneId+':'+payload.id);
-    lastTokenMove=null;
-  } else {
-    emitTransient('token:move', payload);
-  }
 }
 function moveSelectedTokenFromEvent(e){
   const r=canvas.getBoundingClientRect();
@@ -1331,7 +1256,7 @@ function flushFogAppend(){
   if(!pendingFogStrokes.length) return;
   const strokes=pendingFogStrokes.splice(0, pendingFogStrokes.length);
   captureCurrentScene();
-  if(role === 'master' && currentRoom) emitReliable('fog:append', { sceneId:currentSceneId, strokes });
+  if(role === 'master' && currentRoom) socket.emit('fog:append', { sceneId:currentSceneId, strokes });
 }
 function addFogStroke(e){
   if(role !== 'master') return;
@@ -1388,12 +1313,7 @@ canvas.addEventListener('pointerdown', e=>{
   dragging=true; last={x:e.clientX,y:e.clientY}; dragSnapshot=null; fogGestureStartLen=null;
   const w=eventWorld(e);
   const hit=tokenAt(w.x,w.y);
-  if(hit && canMoveToken(hit)) {
-    dragSnapshot = role==='master'
-      ? {type:'tokenMove', id:hit.id, before:{gx:hit.gx, gy:hit.gy}}
-      : null;
-    selectedTokenId=hit.id; draggingToken=true; moveSelectedTokenFromEvent(e); requestDraw(); return;
-  }
+  if(hit && canMoveToken(hit)) { dragSnapshot = role==='master' ? cloneCore() : null; selectedTokenId=hit.id; draggingToken=true; moveSelectedTokenFromEvent(e); requestDraw(); return; }
   if(hit) { selectedTokenId=hit.id; requestDraw(); return; }
   selectedTokenId=null;
   if(mode==='draw' && role==='master'){
@@ -1401,10 +1321,8 @@ canvas.addEventListener('pointerdown', e=>{
   } else if(mode==='fog' && role==='master'){
     fogGestureStartLen=fogState.strokes.length;
     if(fogTool==='rect') startFogRect(e); else addFogStroke(e);
-  } else if(mode==='map' && role==='master'){
-    dragSnapshot={map:cloneJson(map)};
-  } else if(mode==='grid' && role==='master'){
-    dragSnapshot={grid:cloneJson(grid)};
+  } else if((mode==='map' || mode==='grid') && role==='master'){
+    dragSnapshot=cloneCore();
   }
   requestDraw();
 });
@@ -1424,8 +1342,8 @@ canvas.addEventListener('pointermove', e=>{
   if(draggingToken) { moveSelectedTokenFromEvent(e); }
   else if(mode==='draw' && role==='master'){ updateDrawing(e); }
   else if(mode==='fog' && role==='master'){ if(fogTool==='rect') updateFogRect(e); else addFogStroke(e); }
-  else if(mode==='map' && !map.locked && role==='master') { map.x+=dx/view.scale; map.y+=dy/view.scale; scheduleStatePatch('map'); }
-  else if(mode==='grid' && !grid.locked && role==='master') { grid.x+=dx/view.scale; grid.y+=dy/view.scale; syncInputs(); scheduleStatePatch('grid'); }
+  else if(mode==='map' && !map.locked && role==='master') { map.x+=dx/view.scale; map.y+=dy/view.scale; scheduleSend(false); }
+  else if(mode==='grid' && !grid.locked && role==='master') { grid.x+=dx/view.scale; grid.y+=dy/view.scale; syncInputs(); scheduleSend(false); }
   else { view.x+=dx; view.y+=dy; }
   requestDraw();
 });
@@ -1438,8 +1356,8 @@ function endPointer(e){
     flushFogAppend();
     commitFogGesture();
   }
-  if(draggingToken) flushTokenMove(true);
-  if(dragging && role==='master' && !draggingToken && (mode==='map' || mode==='grid')) scheduleStatePatch(mode, true);
+  if(draggingToken) flushTokenMove();
+  if(dragging && role==='master' && !draggingToken && mode!=='draw' && mode!=='fog') scheduleSend(false);
   if(role==='master') commitHistory(dragSnapshot);
   dragging=false; draggingToken=false; dragSnapshot=null; pinchStart=null; fogGestureStartLen=null;
 }
@@ -1491,7 +1409,7 @@ $('file').onchange=async e=>{
     const dataUrl = await imageFileToResizedDataUrl(f, 1500);
     loadImage(dataUrl);
     captureCurrentScene();
-    sendStatePatch(['imgSrc']);
+    sendState(true);
   }catch(err){
     alert('Errore caricamento immagine: ' + err.message);
   }
@@ -1506,7 +1424,7 @@ $('deleteMap').onclick=()=>markChange(()=>{
   $('mapInfo').textContent = 'Nessuna mappa caricata.';
   captureCurrentScene();
   requestDraw();
-  sendStatePatch(['imgSrc']);
+  sendState(true);
 });
 $('addToken').onclick=()=>markChange(()=>{
   if(role !== 'master') return;
@@ -1526,11 +1444,11 @@ $('addToken').onclick=()=>markChange(()=>{
     lastId=t.id;
   }
   selectedTokenId=lastId;
-  captureCurrentScene(); requestDraw(); sendTokensSync('structure');
+  captureCurrentScene(); requestDraw(); sendState(false);
 });
 $('deleteToken').onclick=()=>markChange(()=>{
   if(role !== 'master' || !selectedTokenId) return;
-  tokens=tokens.filter(t=>t.id!==selectedTokenId); selectedTokenId=null; captureCurrentScene(); requestDraw(); sendTokensSync('structure');
+  tokens=tokens.filter(t=>t.id!==selectedTokenId); selectedTokenId=null; captureCurrentScene(); requestDraw(); sendState(false);
 });
 
 if($('tokenCategoryFilter')) $('tokenCategoryFilter').onchange=renderTokenLibrary;
@@ -1542,18 +1460,18 @@ if($('applyTokenAsset')) $('applyTokenAsset').onclick=()=>markChange(()=>{
   if(!t) return;
   t.icon=selectedTokenAsset?.icon || null;
   t.assetId=selectedTokenAsset?.id || null;
-  captureCurrentScene(); requestDraw(); sendTokensSync('structure');
+  captureCurrentScene(); requestDraw(); sendState(false);
 });
 
 
-$('gridColor').onchange=e=>markChange(()=>{ grid.color=e.target.value; requestDraw(); sendStatePatch(['grid']); });
-$('fogColor').onchange=e=>markChange(()=>{ fogState.color=e.target.value; captureCurrentScene(); requestDraw(); sendStatePatch(['fogState']); });
+$('gridColor').onchange=e=>markChange(()=>{ grid.color=e.target.value; requestDraw(); sendState(false); });
+$('fogColor').onchange=e=>markChange(()=>{ fogState.color=e.target.value; captureCurrentScene(); requestDraw(); sendState(false); });
 $('fogBrush').onclick=()=>{ fogTool='brush'; setMode('fog'); $('fogBrush').classList.add('on'); $('fogRect').classList.remove('on'); };
 $('fogRect').onclick=()=>{ fogTool='rect'; setMode('fog'); $('fogRect').classList.add('on'); $('fogBrush').classList.remove('on'); };
 $('fogOpReveal').onclick=()=>{ fogOp='reveal'; setMode('fog'); $('fogOpReveal').classList.add('on'); $('fogOpHide').classList.remove('on'); };
 $('fogOpHide').onclick=()=>{ fogOp='hide'; setMode('fog'); $('fogOpHide').classList.add('on'); $('fogOpReveal').classList.remove('on'); };
-$('fogAll').onclick=()=>markChange(()=>{ darkenAll(); requestDraw(); sendStatePatch(['fogState']); });
-$('fogClear').onclick=()=>markChange(()=>{ clearFog(); requestDraw(); sendStatePatch(['fogState']); });
+$('fogAll').onclick=()=>markChange(()=>{ darkenAll(); requestDraw(); sendState(false); });
+$('fogClear').onclick=()=>markChange(()=>{ clearFog(); requestDraw(); sendState(false); });
 function resetViewToMap(){
   view.scale=1;
   let cx=0, cy=0;
@@ -1574,7 +1492,7 @@ function applyNumber(id){
   if(id==='gridOpacity'){ grid.opacity=clamp(v,0,100)/100; shouldSync=true; }
   if(id==='brush') brush=clamp(v,2,1000);
   if(id==='drawSize') drawSize=clamp(v,2,150);
-  syncInputs(); requestDraw(); if(role==='master' && shouldSync) sendStatePatch([id==='mapScale'?'map':'grid']);
+  syncInputs(); requestDraw(); if(role==='master' && shouldSync) sendState(false);
 }
 ['mapScale','gridSize','gridOpacity','brush','drawSize'].forEach(id=>$(id).addEventListener('change',()=>markChange(()=>applyNumber(id))));
 document.querySelectorAll('button[data-step]').forEach(btn=>btn.onclick=()=>{
@@ -1624,7 +1542,7 @@ if($('copyTokensToScene')) $('copyTokensToScene').onclick=()=>{
   const src=lastSceneId && scenes[lastSceneId] ? scenes[lastSceneId] : null;
   if(!src){ alert('Non c’è una scena precedente da cui copiare le pedine.'); return; }
   tokens=JSON.parse(JSON.stringify(src.tokens || []));
-  captureCurrentScene(); requestDraw(); sendTokensSync('replace');
+  captureCurrentScene(); requestDraw(); sendState(false);
 };
 if($('deleteScene')) $('deleteScene').onclick=()=>{
   ensureScenes();
@@ -1633,260 +1551,111 @@ if($('deleteScene')) $('deleteScene').onclick=()=>{
   if(!confirm('Eliminare questa scena?')) return;
   delete scenes[currentSceneId];
   currentSceneId=Object.keys(scenes)[0];
-  applyScene(currentSceneId); sendCampaignReplace();
+  applyScene(currentSceneId); sendState(true);
 };
 if($('exportCampaign')) $('exportCampaign').onclick=exportCampaign;
 if($('importCampaign')) $('importCampaign').onchange=e=>{ const f=e.target.files[0]; if(f) importCampaignFile(f).catch(err=>alert('Errore import: '+err.message)); };
 
-function makeSceneSnapshot(){
+function getState(includeImage=false, includeDrawings=includeImage){
   captureCurrentScene();
   const sc=scenes[currentSceneId] || {id:currentSceneId, name:'Scena', imgSrc, map, grid, fogState, drawings, tokens};
-  return {
+  const scene={
     id:currentSceneId,
     name:sc.name || 'Scena',
-    imgSrc:sc.imgSrc ?? imgSrc ?? null,
     map,
     grid,
     fogState,
-    drawings,
     tokens
   };
-}
-function makeStatePatch(fields){
-  captureCurrentScene();
-  const allowed=Array.from(new Set(fields || [])).filter(field=>['name','imgSrc','map','grid','fogState'].includes(field));
-  const sc=scenes[currentSceneId] || {};
-  const scene={id:currentSceneId, name:sc.name || 'Scena'};
-  for(const field of allowed){
-    if(field==='imgSrc') scene.imgSrc=sc.imgSrc ?? imgSrc ?? null;
-    else if(field==='map') scene.map=map;
-    else if(field==='grid') scene.grid=grid;
-    else if(field==='fogState') scene.fogState=fogState;
-    else if(field==='name') scene.name=sc.name || 'Scena';
-  }
-  return {kind:'patch', currentSceneId, fields:allowed, scene};
-}
-function queueReliableItem(item){
-  if(item.key){
-    const latest=latestReliableOrderByKey.get(item.key) || 0;
-    if((item.order || 0) < latest) return;
-    const index=reliableOutbox.findIndex(entry=>entry.key===item.key);
-    if(index>=0){
-      if((reliableOutbox[index].order || 0) <= (item.order || 0)) reliableOutbox[index]=item;
-      return;
-    }
-  }
-  reliableOutbox.push(item);
-  if(reliableOutbox.length>1000) reliableOutbox.splice(0, reliableOutbox.length-1000);
-}
-function scheduleReliableRetry(delay=750){
-  if(reliableRetryTimer || !currentRoom || !role) return;
-  reliableRetryTimer=setTimeout(()=>{
-    reliableRetryTimer=null;
-    if(!socket.connected){ socket.connect(); return; }
-    if(!sessionReady) establishSession();
-    else if(reliableOutbox.length) flushReliableOutbox();
-    else requestSync(false);
-  }, delay);
-}
-function sendReliableItem(item){
-  if(!socket.connected || !sessionReady){ queueReliableItem(item); return; }
-  socket.timeout(10000).emit(item.event, item.data, (err, res)=>{
-    if(err){
-      queueReliableItem(item);
-      setConnUi('reconnecting');
-      scheduleReliableRetry();
-      return;
-    }
-    if(res?.ok===false){
-      if(res.error==='room-not-joined'){
-        queueReliableItem(item);
-        sessionReady=false;
-        setConnUi('reconnecting');
-        scheduleReliableRetry();
-        return;
-      }
-      // Un rifiuto applicativo non va ritentato all'infinito: rileggiamo lo
-      // stato canonico, cosi' anche il mittente torna coerente col server.
-      requestSync(false);
-      return;
-    }
-    if(Number.isFinite(+res?.revision)) lastServerRevision=Math.max(lastServerRevision, +res.revision);
-  });
-}
-function emitReliable(event, data, key=null){
-  if(!currentRoom) return;
-  const order=++reliableOpSeq;
-  const wireData=cloneJson(data);
-  if(wireData && typeof wireData==='object') wireData._opId=syncClientId+':'+order;
-  const item={event, data:wireData, key, order};
-  if(key) latestReliableOrderByKey.set(key, order);
-  if(socket.connected && sessionReady) sendReliableItem(item);
-  else queueReliableItem(item);
-}
-function emitTransient(event, data){
-  if(!currentRoom || !socket.connected || !sessionReady) return;
-  if(socket.volatile?.emit) socket.volatile.emit(event, data);
-  else socket.emit(event, data);
-}
-function flushReliableOutbox(){
-  if(!socket.connected || !sessionReady || !reliableOutbox.length) return;
-  const queued=reliableOutbox.splice(0, reliableOutbox.length);
-  for(const item of queued) sendReliableItem(item);
-  // Gli eventi e la richiesta seguente percorrono lo stesso socket in ordine:
-  // il secondo pull riconcilia anche il mittente, che non riceve i propri broadcast.
-  requestSync(false);
-}
-function sendStatePatch(fields){
-  if(!currentRoom || role!=='master') return;
-  const payload=makeStatePatch(fields);
-  if(!payload.fields.length) return;
-  emitReliable('state:update', payload, 'patch:'+currentSceneId+':'+payload.fields.sort().join(','));
-}
-function scheduleStatePatch(field, flushNow=false){
-  pendingStateFields.add(field);
-  if(syncTimer){ clearTimeout(syncTimer); syncTimer=null; }
-  const flush=()=>{
-    if(syncTimer){ clearTimeout(syncTimer); syncTimer=null; }
-    const fields=[...pendingStateFields];
-    pendingStateFields.clear();
-    if(fields.length) sendStatePatch(fields);
+  if(includeImage) scene.imgSrc = sc.imgSrc || imgSrc || null;
+  if(includeDrawings) scene.drawings = drawings;
+  const payload={
+    type:'state',
+    sender:role,
+    currentSceneId,
+    scene,
+    map,
+    grid,
+    fogState,
+    tokens
   };
-  if(flushNow) flush();
-  else syncTimer=setTimeout(flush, 50);
+  if(includeImage) payload.imgSrc = scene.imgSrc;
+  if(includeDrawings) payload.drawings = drawings;
+  return payload;
 }
-function sendTokensSync(mode='structure'){
-  if(!currentRoom || role!=='master') return;
+function sendState(includeImage=false){
+  if(!currentRoom) return;
+  if(role !== 'master' && role !== 'player') return;
   captureCurrentScene();
-  emitReliable('tokens:sync', {sceneId:currentSceneId, mode, tokens}, 'tokens:'+currentSceneId);
+  const state = role === 'player' ? {type:'state', sender:'player', currentSceneId, tokens} : getState(includeImage, includeImage);
+  socket.emit('state:update', state);
 }
-function sendSceneReplace(){
-  if(!currentRoom || role!=='master') return;
-  emitReliable('state:update', {kind:'scene:replace', currentSceneId, scene:makeSceneSnapshot()}, 'scene:'+currentSceneId);
-}
-function sendCampaignReplace(){
-  if(!currentRoom || role!=='master') return;
-  captureCurrentScene();
-  emitReliable('state:update', {kind:'campaign:replace', currentSceneId, scenes}, 'campaign');
-}
-function requestSync(flushAfter=false, includeAllScenes=false){
-  if(!currentRoom || !role || !socket.connected || !sessionReady) return;
-  socket.timeout(10000).emit('state:request', {
-    full:includeAllScenes && role==='master',
-    sinceRevision:lastServerRevision
-  }, (err, res)=>{
-    if(err || res?.ok===false){ setConnUi('reconnecting'); scheduleReliableRetry(); return; }
-    if(Number.isFinite(+res?.revision)) lastServerRevision=Math.max(lastServerRevision, +res.revision);
-    if(flushAfter) flushReliableOutbox();
-  });
-}
-function establishSession(){
-  if(!currentRoom || !role || !socket.connected || sessionEstablishing) return;
-  sessionEstablishing=true;
-  sessionReady=false;
-  socket.timeout(10000).emit('role:set', role, (roleErr, roleRes)=>{
-    if(roleErr || roleRes?.ok===false){
-      sessionEstablishing=false;
-      setConnUi('reconnecting');
-      scheduleReliableRetry();
-      return;
-    }
-    socket.timeout(15000).emit('room:join', currentRoom, (roomErr, roomRes)=>{
-      sessionEstablishing=false;
-      if(roomErr || roomRes?.ok===false){ setConnUi('reconnecting'); scheduleReliableRetry(); return; }
-      sessionReady=true;
-      setConnUi('online');
-      // room:join ha gia' consegnato lo stato (tutte le scene al Master).
-      // Questa verifica per revisione resta leggera e poi riproduce l'outbox.
-      requestSync(true, false);
-    });
-  });
-}
-function acceptServerRevision(data){
-  const revision=Number(data?.revision);
-  if(!Number.isFinite(revision) || revision<=0) return true;
-  if(revision < lastServerRevision) return false;
-  lastServerRevision=revision;
-  return true;
-}
+function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
+function requestSync(){ if(currentRoom) socket.emit('state:request', { full: role === 'master' }); }
 function mergeIncomingSceneState(s){
   ensureScenes();
   const incoming=s.scene || s;
   const sid=s.currentSceneId || incoming.id || currentSceneId || 'scene-1';
-  const wasCurrent=sid===currentSceneId;
   const previous=scenes[sid] || defaultScene(incoming.name || 'Scena');
-  const valueOf=(field)=>hasOwn(incoming,field) ? incoming[field] : (hasOwn(s,field) ? s[field] : undefined);
-  const contains=(field)=>hasOwn(incoming,field) || hasOwn(s,field);
-  const oldImg=previous.imgSrc ?? null;
-  let drawingsChanged=false;
-
   previous.id=sid;
-  if(contains('name') && typeof valueOf('name')==='string') previous.name=valueOf('name') || previous.name || 'Scena';
-  else previous.name=previous.name || 'Scena';
-  if(contains('imgSrc')) previous.imgSrc=valueOf('imgSrc') || null;
-  if(contains('map')) previous.map=valueOf('map') || previous.map || {x:100,y:80,scale:1,locked:false};
-  if(contains('grid')) previous.grid=valueOf('grid') || previous.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
-  if(contains('fogState')) previous.fogState=valueOf('fogState') || previous.fogState || {base:'dark', color:'black', strokes:[]};
+  previous.name=incoming.name || previous.name || 'Scena';
+  previous.imgSrc=incoming.imgSrc || s.imgSrc || previous.imgSrc || null;
+  previous.map=incoming.map || s.map || previous.map || {x:100,y:80,scale:1,locked:false};
+  previous.grid=incoming.grid || s.grid || previous.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
+  previous.fogState=incoming.fogState || s.fogState || previous.fogState || {base:'dark', color:'black', strokes:[]};
   previous.fogState.color ??= 'black';
-  if(contains('drawings') && Array.isArray(valueOf('drawings'))){ previous.drawings=valueOf('drawings'); drawingsChanged=true; }
-  else previous.drawings=previous.drawings || [];
-  if(contains('tokens') && Array.isArray(valueOf('tokens'))) previous.tokens=valueOf('tokens');
-  else previous.tokens=previous.tokens || [];
+  previous.drawings=Array.isArray(incoming.drawings) ? incoming.drawings : (Array.isArray(s.drawings) ? s.drawings : (previous.drawings || []));
+  previous.tokens=Array.isArray(incoming.tokens) ? incoming.tokens : (Array.isArray(s.tokens) ? s.tokens : (previous.tokens || []));
   scenes[sid]=previous;
-
-  if(!wasCurrent){
-    currentSceneId=sid;
-    applyScene(sid);
-    return;
-  }
-
-  // Gli update parziali non devono richiamare applyScene(): quella funzione
-  // azzera la selezione e interrompe il drag del Player. Aggiorniamo solo i
-  // componenti realmente presenti nel delta.
-  if(contains('imgSrc') && oldImg!==(previous.imgSrc ?? null)) loadImage(previous.imgSrc || null);
-  if(contains('map')) map=previous.map;
-  if(contains('grid')) grid=previous.grid;
-  if(contains('fogState')) fogState=previous.fogState;
-  if(contains('drawings')) drawings=previous.drawings;
-  if(contains('tokens')) tokens=previous.tokens;
-  if(selectedTokenId && !tokens.some(token=>token.id===selectedTokenId)) selectedTokenId=null;
-  trimDrawingStore(); trimFogStore();
-  if(drawingsChanged) markDrawingsDirty();
-  syncInputs(); renderScenesUi(); requestDraw();
+  currentSceneId=sid;
+  applyScene(sid);
 }
 function applyState(s){
   if(!s) return;
-  // Il Player non invia stati generici: l'unico flusso Player -> Master
-  // consentito e' l'evento dedicato token:move.
+  if(role === 'master' && s.sender === 'player'){
+    const sid=s.currentSceneId || currentSceneId;
+    if(Array.isArray(s.tokens)){
+      if(sid===currentSceneId) tokens=s.tokens;
+      ensureScenes();
+      if(scenes[sid]) scenes[sid].tokens=s.tokens;
+    }
+    requestDraw();
+    return;
+  }
   if(s.sender === 'player') return;
   if(role !== 'master' && role !== 'player') return;
-  if(!acceptServerRevision(s)) return;
   if(s.scenes){
     scenes=s.scenes;
     currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
     applyScene(currentSceneId);
+    if(role==='master') masterSyncedOnce = true;
     return;
   }
   mergeIncomingSceneState(s);
+  if(role==='master') masterSyncedOnce = true;
 }
 socket.on('connect', () => {
-  if(reliableRetryTimer){ clearTimeout(reliableRetryTimer); reliableRetryTimer=null; }
-  sessionReady=false;
-  sessionEstablishing=false;
-  setConnUi(currentRoom && role ? 'reconnecting' : 'online');
-  if(currentRoom && role) establishSession();
+  setConnUi('online');
+  if(currentRoom){
+    socket.emit('room:join', currentRoom, () => {
+      // Il master, una volta caricato lo stato iniziale, riafferma la
+      // propria copia locale al server invece di tirarne giu' una
+      // eventualmente piu' vecchia (vedi nota su masterSyncedOnce sopra).
+      if(role === 'master' && masterSyncedOnce) sendState(true);
+      else requestSync();
+    });
+  }
 });
 socket.on('disconnect', (reason) => {
-  if(reliableRetryTimer){ clearTimeout(reliableRetryTimer); reliableRetryTimer=null; }
-  sessionReady=false;
-  sessionEstablishing=false;
   setConnUi('offline');
-  // Su una disconnessione "io server disconnect" Socket.IO non riconnette
-  // automaticamente: riavviamo esplicitamente il collegamento.
-  if(reason === 'io server disconnect') socket.connect();
+  // Su una disconnessione "io server disconnect" (es. il server chiude
+  // esplicitamente il socket) Socket.IO NON riconnette da solo: va
+  // richiesto a mano, altrimenti il client resta bloccato disconnesso.
+  if(reason === 'io server disconnect'){
+    socket.connect();
+  }
 });
-socket.io?.on('reconnect_attempt', () => setConnUi('reconnecting'));
-socket.on('connect_error', () => setConnUi('reconnecting'));
+socket.on('reconnect_attempt', () => setConnUi('reconnecting'));
 socket.on('state:update', state => applyState(state));
 
 function setConnUi(status){
@@ -1896,14 +1665,16 @@ function setConnUi(status){
   el.textContent = status==='online' ? '🟢 Connesso' : status==='reconnecting' ? '🟡 Riconnessione…' : '🔴 Disconnesso';
 }
 
-// Al ritorno in primo piano rileggiamo sempre la copia canonica del server.
-// Non reinviamo uno snapshot completo del Master: potrebbe contenere posizioni
-// PG vecchie e annullare un movimento effettuato dal Player mentre la tab era sospesa.
+// Fix ritardi di sync: quando il tab torna visibile/attivo forziamo un
+// controllo di connessione e un resync completo, invece di aspettare i
+// timer interni di Socket.IO (che nei tab in background vengono anch'essi
+// rallentati dal browser e possono impiegare fino a un minuto a reagire
+// a una connessione morta in silenzio).
 function forceResyncIfNeeded(){
-  if(!currentRoom || !role) return;
+  if(!currentRoom) return;
   if(!socket.connected){ socket.connect(); return; }
-  if(!sessionReady) establishSession();
-  else requestSync(false);
+  if(role === 'master' && masterSyncedOnce) sendState(true);
+  else requestSync();
   requestDraw();
 }
 document.addEventListener('visibilitychange', () => {
@@ -1918,51 +1689,39 @@ function ensureSceneForMessage(sceneId){
   return scenes[sceneId];
 }
 socket.on('drawing:add', data => {
-  if(!data || !data.drawing || !acceptServerRevision(data)) return;
+  if(!data || !data.drawing) return;
   const sid=data.sceneId || currentSceneId;
   const sc=ensureSceneForMessage(sid);
   sc.drawings=Array.isArray(sc.drawings) ? sc.drawings : [];
   if(!data.drawing.id || !sc.drawings.some(d=>d.id===data.drawing.id)) sc.drawings.push(data.drawing);
-  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); requestDraw(); }
+  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
 });
 socket.on('drawings:replace', data => {
-  if(!data || !Array.isArray(data.drawings) || !acceptServerRevision(data)) return;
+  if(!data || !Array.isArray(data.drawings)) return;
   const sid=data.sceneId || currentSceneId;
   const sc=ensureSceneForMessage(sid);
   sc.drawings=data.drawings;
-  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); requestDraw(); }
+  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
 });
 socket.on('drawings:clear', data => {
-  if(!acceptServerRevision(data)) return;
   const sid=data?.sceneId || currentSceneId;
   const sc=ensureSceneForMessage(sid);
   sc.drawings=[];
-  if(sid===currentSceneId){ drawings=[]; markDrawingsDirty(); requestDraw(); }
+  if(sid===currentSceneId){ drawings=[]; markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
 });
 socket.on('fog:append', data => {
-  if(!data || !Array.isArray(data.strokes) || !acceptServerRevision(data)) return;
+  if(!data || !Array.isArray(data.strokes)) return;
   const sid=data.sceneId || currentSceneId;
   const sc=ensureSceneForMessage(sid);
   sc.fogState=sc.fogState || {base:'dark', color:'black', strokes:[]};
-  sc.fogState.color ??= 'black';
+  fogState.color ??= 'black';
   sc.fogState.strokes=Array.isArray(sc.fogState.strokes) ? sc.fogState.strokes : [];
   sc.fogState.strokes.push(...data.strokes);
   if(sc.fogState.strokes.length > MAX_FOG_STROKES) sc.fogState.strokes.splice(0, sc.fogState.strokes.length - MAX_FOG_STROKES);
-  if(sid===currentSceneId){ fogState=sc.fogState; requestDraw(); }
-});
-socket.on('tokens:replace', data => {
-  if(!data || !Array.isArray(data.tokens) || !acceptServerRevision(data)) return;
-  const sid=data.sceneId || currentSceneId;
-  const sc=ensureSceneForMessage(sid);
-  sc.tokens=data.tokens;
-  if(sid===currentSceneId){
-    tokens=sc.tokens;
-    if(selectedTokenId && !tokens.some(token=>token.id===selectedTokenId)) selectedTokenId=null;
-    requestDraw();
-  }
+  if(sid===currentSceneId){ fogState=sc.fogState; captureCurrentScene(); requestDraw(); }
 });
 socket.on('token:move', data => {
-  if(!data || !data.id || !acceptServerRevision(data)) return;
+  if(!data || !data.id) return;
   const sid=data.sceneId || currentSceneId;
   ensureScenes();
   const targetTokens = sid===currentSceneId ? tokens : (scenes[sid]?.tokens || []);
@@ -1970,7 +1729,7 @@ socket.on('token:move', data => {
   if(!t) return;
   t.gx = data.gx;
   t.gy = data.gy;
-  if(sid===currentSceneId) requestDraw();
+  if(sid===currentSceneId){ captureCurrentScene(); requestDraw(); }
 });
 
 $('undoBtn').onclick=undo;
@@ -2027,7 +1786,7 @@ document.addEventListener('visibilitychange', () => {
   if(document.visibilityState === 'visible') requestMasterWakeLock();
 });
 setInterval(() => {
-  if(socket.connected && sessionReady && currentRoom){
+  if(socket.connected && currentRoom){
     socket.emit('client:keepalive', { room: currentRoom, role, sceneId: currentSceneId, t: Date.now() });
   }
 }, 20000);
