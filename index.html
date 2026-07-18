@@ -222,6 +222,11 @@
         <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
           <input id="rectSnap" type="checkbox" checked style="width:auto"> Snap rettangolo alla griglia
         </label>
+        <label>Colore nebbia</label>
+        <select id="fogColor">
+          <option value="black">Nera</option>
+          <option value="white">Bianca</option>
+        </select>
         <div class="row panelSection">
           <button id="fogAll" class="warn">Reset nebbia</button>
           <button id="fogClear">Rivela tutto</button>
@@ -348,7 +353,11 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha:false });
 const fogView = document.createElement('canvas');
 const fogCtx = fogView.getContext('2d');
-const socket = io({ transports: ['websocket', 'polling'] });
+const drawingLayer = document.createElement('canvas');
+const drawingLayerCtx = drawingLayer.getContext('2d');
+// In locale/hotspot il WebSocket diretto evita il fallback polling, che sotto carico
+// puo' accumulare richieste HTTP e far sembrare tutto bloccato.
+const socket = io({ transports: ['websocket'], upgrade:false, reconnection:true, timeout:10000 });
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
@@ -364,10 +373,19 @@ let drawTool='pen', drawColor='rgba(0,0,0,1)', drawSize=25, drawings=[], activeD
 let rectStart=null, rectPreview=null;
 let tokens=[];
 let selectedTokenId=null;
-let fogState={base:'dark', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
+let fogState={base:'dark', color:'black', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
 let syncTimer=null, rafPending=false;
 let history=[], historyIndex=-1, dragSnapshot=null;
+let drawingGestureSnapshot=null, drawingsDirtyDuringGesture=false;
+let fogGestureStartLen=null, pendingFogStrokes=[], fogBatchTimer=null;
+let pendingTokenMove=null, tokenMoveTimer=null;
 let selectedTokenAsset=null;
+let imageLoadSeq=0;
+let drawingsVersion=0, drawingCacheKey='';
+const MAX_HISTORY=60;
+const MAX_DRAWINGS=3000;
+const MAX_POINTS_PER_DRAWING=1200;
+const MAX_FOG_STROKES=5000;
 const tokenImageCache=new Map();
 
 function $(id){ return document.getElementById(id); }
@@ -459,41 +477,103 @@ function renderTokenLibrary(){
 }
 
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
-function loadImage(src){ imgSrc=src; img=new Image(); img.onload=()=>requestDraw(); img.src=src; }
+function makeId(prefix='id'){ return prefix + Date.now() + Math.random().toString(16).slice(2); }
+function cloneJson(value){
+  if(typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+function loadImage(src){
+  imgSrc=src;
+  if(!src){ img=null; requestDraw(); return; }
+  const seq=++imageLoadSeq;
+  const next=new Image();
+  next.decoding='async';
+  next.onload=()=>{ if(seq===imageLoadSeq){ img=next; requestDraw(); } };
+  next.onerror=()=>{ if(seq===imageLoadSeq){ img=null; requestDraw(); } };
+  next.src=src;
+}
 function requestDraw(){ if(rafPending) return; rafPending=true; requestAnimationFrame(()=>{ rafPending=false; draw(); }); }
-function cloneCore(){ return JSON.parse(JSON.stringify({map, grid, fogState, drawings, tokens, selectedTokenId})); }
+function markDrawingsDirty(){ drawingsVersion++; drawingCacheKey=''; }
+function trimDrawingStore(){
+  if(drawings.length > MAX_DRAWINGS) drawings.splice(0, drawings.length - MAX_DRAWINGS);
+}
+function trimFogStore(){
+  if(fogState?.strokes?.length > MAX_FOG_STROKES) fogState.strokes.splice(0, fogState.strokes.length - MAX_FOG_STROKES);
+}
+function cloneDrawings(){ return cloneJson(drawings); }
+function cloneCore(){ return cloneJson({map, grid, fogState, tokens, selectedTokenId}); }
 function restoreCore(st){
   if(!st) return;
-  map=st.map; grid=st.grid; fogState=st.fogState; drawings=Array.isArray(st.drawings)?st.drawings:[]; tokens=st.tokens; selectedTokenId=st.selectedTokenId || null;
-  syncInputs(); requestDraw(); if(role==='master') sendState(false);
+  map=cloneJson(st.map || map);
+  grid=cloneJson(st.grid || grid);
+  fogState=cloneJson(st.fogState || fogState);
+  tokens=Array.isArray(st.tokens) ? cloneJson(st.tokens) : [];
+  selectedTokenId=st.selectedTokenId || null;
+  trimFogStore();
+  captureCurrentScene(); syncInputs(); requestDraw(); if(role==='master') sendState(false);
 }
 function sameCore(a,b){ return JSON.stringify(a) === JSON.stringify(b); }
-function pushHistory(){
-  if(role !== 'master') return;
-  const snap=cloneCore();
-  if(historyIndex>=0 && sameCore(history[historyIndex], snap)) return;
+function pushHistoryRecord(record){
+  if(role !== 'master' || !record) return;
   history=history.slice(0, historyIndex+1);
-  history.push(snap);
-  if(history.length>80) history.shift();
+  history.push(record);
+  if(history.length > MAX_HISTORY){
+    const removeCount = history.length - MAX_HISTORY;
+    history.splice(0, removeCount);
+    historyIndex = Math.max(-1, historyIndex - removeCount);
+  }
   historyIndex=history.length-1;
+  updateUndoRedo();
+}
+function pushHistory(){
+  // La vecchia versione salvava snapshot completi anche dei disegni: con molti tratti
+  // diventava enorme. Ora lo storico parte vuoto e ogni azione salva solo cio' che cambia.
   updateUndoRedo();
 }
 function commitHistory(before){
   if(role !== 'master' || !before) return;
   const after=cloneCore();
   if(sameCore(before, after)) return;
-  history=history.slice(0, historyIndex+1);
-  history.push(before); history.push(after);
-  if(history.length>80) history=history.slice(history.length-80);
-  historyIndex=history.length-1;
+  pushHistoryRecord({type:'core', before, after});
+}
+function applyHistoryRecord(record, direction){
+  if(!record) return;
+  const undoing = direction === 'undo';
+  if(record.type === 'core'){
+    restoreCore(undoing ? record.before : record.after);
+  } else if(record.type === 'drawingAdd'){
+    const id=record.drawing?.id;
+    if(undoing){
+      drawings = id ? drawings.filter(d=>d.id!==id) : drawings.slice(0,-1);
+    } else {
+      if(record.drawing && (!id || !drawings.some(d=>d.id===id))) drawings.push(cloneJson(record.drawing));
+    }
+    trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); emitDrawingsReplace();
+  } else if(record.type === 'drawingsReplace'){
+    drawings = cloneJson(undoing ? record.before : record.after);
+    trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); emitDrawingsReplace();
+  } else if(record.type === 'fogAppend'){
+    const count=record.strokes?.length || 0;
+    if(undoing && count) fogState.strokes.splice(Math.max(0, fogState.strokes.length-count), count);
+    else if(!undoing && count) fogState.strokes.push(...cloneJson(record.strokes));
+    trimFogStore(); captureCurrentScene(); requestDraw(); sendState(false);
+  }
+}
+function undo(){
+  if(role !== 'master' || historyIndex < 0) return;
+  applyHistoryRecord(history[historyIndex], 'undo');
+  historyIndex--; updateUndoRedo();
+}
+function redo(){
+  if(role !== 'master' || historyIndex >= history.length-1) return;
+  historyIndex++;
+  applyHistoryRecord(history[historyIndex], 'redo');
   updateUndoRedo();
 }
-function undo(){ if(role !== 'master' || historyIndex<=0) return; historyIndex--; restoreCore(history[historyIndex]); updateUndoRedo(); }
-function redo(){ if(role !== 'master' || historyIndex>=history.length-1) return; historyIndex++; restoreCore(history[historyIndex]); updateUndoRedo(); }
 function updateUndoRedo(){
   const u=$('undoBtn'), r=$('redoBtn');
-  if(u) u.disabled = role !== 'master' || historyIndex<=0;
-  if(r) r.disabled = role !== 'master' || historyIndex>=history.length-1;
+  if(u) u.disabled = role !== 'master' || historyIndex < 0;
+  if(r) r.disabled = role !== 'master' || historyIndex >= history.length-1;
 }
 function markChange(fn){ const before=cloneCore(); fn(); commitHistory(before); }
 
@@ -504,7 +584,7 @@ function defaultScene(name='Scena 1'){
     imgSrc:null,
     map:{x:100,y:80,scale:1,locked:false},
     grid:{x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false},
-    fogState:{base:'dark', strokes:[]},
+    fogState:{base:'dark', color:'black', strokes:[]},
     drawings:[],
     tokens:[]
   };
@@ -523,15 +603,19 @@ function applyScene(sceneId){
   ensureScenes();
   const sc=scenes[sceneId];
   if(!sc) return;
+  const previousImgSrc = imgSrc || null;
   currentSceneId=sceneId;
-  imgSrc=sc.imgSrc || null;
-  img=null;
-  if(imgSrc) loadImage(imgSrc);
+  const nextImgSrc=sc.imgSrc || null;
+  if(nextImgSrc !== previousImgSrc){
+    loadImage(nextImgSrc);
+  }
   map=sc.map || {x:100,y:80,scale:1,locked:false};
   grid=sc.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
-  fogState=sc.fogState || {base:'dark', strokes:[]};
+  fogState=sc.fogState || {base:'dark', color:'black', strokes:[]};
+  fogState.color ??= 'black';
   drawings=Array.isArray(sc.drawings) ? sc.drawings : [];
   tokens=Array.isArray(sc.tokens) ? sc.tokens : [];
+  trimDrawingStore(); trimFogStore(); markDrawingsDirty();
   selectedTokenId=null;
   syncInputs(); renderScenesUi(); renderTokenLibrary(); requestDraw();
 }
@@ -652,14 +736,20 @@ $('choosePlayer').onclick=()=>setRole('player');
 function resize(){
   dpr = window.devicePixelRatio || 1;
   W = canvas.clientWidth; H = canvas.clientHeight;
-  canvas.width = Math.floor(W*dpr); canvas.height = Math.floor(H*dpr);
-  fogView.width = canvas.width; fogView.height = canvas.height;
+  const nextW=Math.floor(W*dpr), nextH=Math.floor(H*dpr);
+  if(canvas.width !== nextW) canvas.width = nextW;
+  if(canvas.height !== nextH) canvas.height = nextH;
+  if(fogView.width !== nextW) fogView.width = nextW;
+  if(fogView.height !== nextH) fogView.height = nextH;
+  if(drawingLayer.width !== nextW) drawingLayer.width = nextW;
+  if(drawingLayer.height !== nextH) drawingLayer.height = nextH;
+  drawingCacheKey='';
   requestDraw();
 }
 window.addEventListener('resize', resize);
 
-function darkenAll(){ fogState={base:'dark', strokes:[]}; }
-function clearFog(){ fogState={base:'clear', strokes:[]}; }
+function darkenAll(){ fogState={base:'dark', color:fogState.color || 'black', strokes:[]}; }
+function clearFog(){ fogState={base:'clear', color:fogState.color || 'black', strokes:[]}; }
 
 function screenToWorld(x,y){ return {x:(x-view.x)/view.scale, y:(y-view.y)/view.scale}; }
 
@@ -672,7 +762,13 @@ function draw(){
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
   if(img) ctx.drawImage(img, map.x, map.y, img.width*map.scale, img.height*map.scale);
+  ctx.restore();
+
   drawDrawings();
+
+  ctx.save();
+  ctx.translate(view.x, view.y);
+  ctx.scale(view.scale, view.scale);
   drawGrid();
   drawTokens();
   ctx.restore();
@@ -680,38 +776,74 @@ function draw(){
   drawFogOverlay();
 }
 
-
-function drawDrawings(){
-  ctx.save();
-  ctx.lineCap='round';
-  ctx.lineJoin='round';
+function drawingCacheFingerprint(){
+  return [drawingsVersion, W, H, dpr, view.x.toFixed(2), view.y.toFixed(2), view.scale.toFixed(4)].join('|');
+}
+function ensureDrawingLayer(){
+  const w=Math.floor(W*dpr), h=Math.floor(H*dpr);
+  if(drawingLayer.width !== w) drawingLayer.width = w;
+  if(drawingLayer.height !== h) drawingLayer.height = h;
+}
+function renderDrawingLayerIfNeeded(){
+  ensureDrawingLayer();
+  const key=drawingCacheFingerprint();
+  if(drawingCacheKey === key) return;
+  const dctx=drawingLayerCtx;
+  dctx.setTransform(1,0,0,1,0,0);
+  dctx.clearRect(0,0,drawingLayer.width,drawingLayer.height);
+  dctx.setTransform(dpr,0,0,dpr,0,0);
+  dctx.save();
+  dctx.translate(view.x, view.y);
+  dctx.scale(view.scale, view.scale);
+  dctx.lineCap='round';
+  dctx.lineJoin='round';
   for(const d of drawings){
-    drawOneDrawing(d);
+    if(d === activeDrawing) continue;
+    drawOneDrawingOn(dctx, d);
   }
-  if(drawingPreview) drawOneDrawing(drawingPreview, true);
-  ctx.restore();
+  dctx.restore();
+  drawingCacheKey=key;
 }
-function drawOneDrawing(d, preview=false){
-  if(!d) return;
+function drawDrawings(){
+  renderDrawingLayerIfNeeded();
   ctx.save();
-  ctx.globalAlpha = preview ? .75 : 1;
-  ctx.strokeStyle = d.color || 'rgba(0,0,0,1)';
-  ctx.fillStyle = d.color || 'rgba(0,0,0,1)';
-  ctx.lineWidth = Math.max((d.size || 4), 1);
-  if(d.type === 'pen' && Array.isArray(d.points) && d.points.length){
-    ctx.beginPath();
-    ctx.moveTo(d.points[0].x, d.points[0].y);
-    for(let i=1;i<d.points.length;i++) ctx.lineTo(d.points[i].x, d.points[i].y);
-    ctx.stroke();
-  } else if(d.type === 'rect'){
-    ctx.strokeRect(d.x, d.y, d.w, d.h);
-  } else if(d.type === 'circle'){
-    ctx.beginPath();
-    ctx.ellipse(d.cx, d.cy, Math.abs(d.rx), Math.abs(d.ry), 0, 0, Math.PI*2);
-    ctx.stroke();
-  }
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.drawImage(drawingLayer,0,0);
   ctx.restore();
+
+  if(activeDrawing || drawingPreview){
+    ctx.save();
+    ctx.translate(view.x, view.y);
+    ctx.scale(view.scale, view.scale);
+    ctx.lineCap='round';
+    ctx.lineJoin='round';
+    if(activeDrawing) drawOneDrawing(activeDrawing);
+    if(drawingPreview) drawOneDrawing(drawingPreview, true);
+    ctx.restore();
+  }
 }
+function drawOneDrawingOn(targetCtx, d, preview=false){
+  if(!d) return;
+  targetCtx.save();
+  targetCtx.globalAlpha = preview ? .75 : 1;
+  targetCtx.strokeStyle = d.color || 'rgba(0,0,0,1)';
+  targetCtx.fillStyle = d.color || 'rgba(0,0,0,1)';
+  targetCtx.lineWidth = Math.max((d.size || 4), 1);
+  if(d.type === 'pen' && Array.isArray(d.points) && d.points.length){
+    targetCtx.beginPath();
+    targetCtx.moveTo(d.points[0].x, d.points[0].y);
+    for(let i=1;i<d.points.length;i++) targetCtx.lineTo(d.points[i].x, d.points[i].y);
+    targetCtx.stroke();
+  } else if(d.type === 'rect'){
+    targetCtx.strokeRect(d.x, d.y, d.w, d.h);
+  } else if(d.type === 'circle'){
+    targetCtx.beginPath();
+    targetCtx.ellipse(d.cx, d.cy, Math.max(Math.abs(d.rx), .01), Math.max(Math.abs(d.ry), .01), 0, 0, Math.PI*2);
+    targetCtx.stroke();
+  }
+  targetCtx.restore();
+}
+function drawOneDrawing(d, preview=false){ drawOneDrawingOn(ctx, d, preview); }
 function distToSegment(p, a, b){
   const vx=b.x-a.x, vy=b.y-a.y, wx=p.x-a.x, wy=p.y-a.y;
   const c1=vx*wx+vy*wy;
@@ -740,21 +872,71 @@ function drawingHit(d, p, radius){
   }
   return false;
 }
+function radialSimplify(points, minDist){
+  if(!Array.isArray(points) || points.length <= 2) return points || [];
+  const out=[points[0]];
+  let last=points[0];
+  for(let i=1;i<points.length-1;i++){
+    const p=points[i];
+    if(Math.hypot(p.x-last.x, p.y-last.y) >= minDist){ out.push(p); last=p; }
+  }
+  out.push(points[points.length-1]);
+  return out;
+}
+function limitPoints(points, maxPoints=MAX_POINTS_PER_DRAWING){
+  if(points.length <= maxPoints) return points;
+  const out=[];
+  const step=(points.length-1)/(maxPoints-1);
+  for(let i=0;i<maxPoints;i++) out.push(points[Math.round(i*step)]);
+  return out;
+}
+function normalizeDrawingForWire(d){
+  const c=cloneJson(d);
+  c.id = c.id || makeId('draw');
+  c.size = clamp(Number(c.size)||4, 1, 300);
+  c.color = c.color || 'rgba(0,0,0,1)';
+  if(c.type === 'pen'){
+    c.points = radialSimplify((c.points || []).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), Math.max(1.25, c.size*.08));
+    c.points = limitPoints(c.points);
+  }
+  return c;
+}
+function emitDrawingAdd(d){
+  if(role !== 'master' || !currentRoom || !d) return;
+  socket.emit('drawing:add', { sceneId:currentSceneId, drawing:normalizeDrawingForWire(d) });
+}
+function emitDrawingsReplace(){
+  if(role !== 'master' || !currentRoom) return;
+  socket.emit('drawings:replace', { sceneId:currentSceneId, drawings:drawings.map(normalizeDrawingForWire) });
+}
+function emitDrawingsClear(){
+  if(role !== 'master' || !currentRoom) return;
+  socket.emit('drawings:clear', { sceneId:currentSceneId });
+}
 function eraseDrawingAtPoint(p){
   const before=drawings.length;
   const radius=Math.max(4, drawSize/2);
   drawings=drawings.filter(d=>!drawingHit(d,p,radius));
-  if(drawings.length!==before){ captureCurrentScene(); requestDraw(); scheduleSend(false); }
+  if(drawings.length!==before){
+    drawingsDirtyDuringGesture=true;
+    trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw();
+  }
 }
 function startDrawing(e){
   if(role !== 'master') return;
   const p=eventWorld(e);
-  if(drawTool==='eraser'){ eraseDrawingAtPoint(p); return; }
+  drawingGestureSnapshot=null;
+  drawingsDirtyDuringGesture=false;
+  if(drawTool==='eraser'){
+    drawingGestureSnapshot=cloneDrawings();
+    eraseDrawingAtPoint(p);
+    return;
+  }
   if(drawTool==='pen'){
-    activeDrawing={type:'pen', color:drawColor, size:drawSize, points:[p]};
+    activeDrawing={id:makeId('draw'), type:'pen', color:drawColor, size:drawSize, points:[p]};
     drawings.push(activeDrawing);
   } else {
-    activeDrawing={type:drawTool, color:drawColor, size:drawSize, start:p};
+    activeDrawing={id:makeId('draw'), type:drawTool, color:drawColor, size:drawSize, start:p};
     drawingPreview=null;
   }
   requestDraw();
@@ -770,22 +952,45 @@ function updateDrawing(e){
     if(Math.hypot(p.x-lastPt.x,p.y-lastPt.y) >= Math.max(2, drawSize*.2)) pts.push(p);
   } else if(activeDrawing.type==='rect'){
     const a=activeDrawing.start;
-    drawingPreview={type:'rect', color:drawColor, size:drawSize, x:a.x, y:a.y, w:p.x-a.x, h:p.y-a.y};
+    drawingPreview={id:activeDrawing.id, type:'rect', color:drawColor, size:drawSize, x:a.x, y:a.y, w:p.x-a.x, h:p.y-a.y};
   } else if(activeDrawing.type==='circle'){
     const a=activeDrawing.start;
-    drawingPreview={type:'circle', color:drawColor, size:drawSize, cx:(a.x+p.x)/2, cy:(a.y+p.y)/2, rx:(p.x-a.x)/2, ry:(p.y-a.y)/2};
+    drawingPreview={id:activeDrawing.id, type:'circle', color:drawColor, size:drawSize, cx:(a.x+p.x)/2, cy:(a.y+p.y)/2, rx:(p.x-a.x)/2, ry:(p.y-a.y)/2};
   }
   requestDraw();
 }
 function finishDrawing(){
   if(role !== 'master') return;
-  if(drawTool==='eraser'){ activeDrawing=null; drawingPreview=null; return; }
-  if(activeDrawing && activeDrawing.type==='pen'){
-    if(activeDrawing.points.length<2) drawings.pop();
-  } else if(drawingPreview){
-    drawings.push(drawingPreview);
+  if(drawTool==='eraser'){
+    if(drawingsDirtyDuringGesture){
+      const after=cloneDrawings();
+      pushHistoryRecord({type:'drawingsReplace', before:drawingGestureSnapshot || [], after});
+      emitDrawingsReplace();
+    }
+    activeDrawing=null; drawingPreview=null; drawingGestureSnapshot=null; drawingsDirtyDuringGesture=false;
+    return;
   }
-  activeDrawing=null; drawingPreview=null; captureCurrentScene(); requestDraw(); scheduleSend(false);
+
+  let committed=null;
+  if(activeDrawing && activeDrawing.type==='pen'){
+    activeDrawing.points = radialSimplify(activeDrawing.points, Math.max(1.25, activeDrawing.size*.08));
+    activeDrawing.points = limitPoints(activeDrawing.points);
+    if(activeDrawing.points.length<2){
+      drawings=drawings.filter(d=>d!==activeDrawing);
+    } else {
+      committed=normalizeDrawingForWire(activeDrawing);
+      Object.assign(activeDrawing, committed);
+    }
+  } else if(drawingPreview){
+    committed=normalizeDrawingForWire(drawingPreview);
+    drawings.push(committed);
+  }
+  activeDrawing=null; drawingPreview=null;
+  trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw();
+  if(committed){
+    pushHistoryRecord({type:'drawingAdd', drawing:cloneJson(committed)});
+    emitDrawingAdd(committed);
+  }
 }
 
 function drawGrid(){
@@ -854,6 +1059,17 @@ function tokenAt(wx, wy){
   }
   return null;
 }
+function queueTokenMove(data){
+  pendingTokenMove=data;
+  if(tokenMoveTimer) return;
+  tokenMoveTimer=setTimeout(flushTokenMove, 50);
+}
+function flushTokenMove(){
+  if(tokenMoveTimer){ clearTimeout(tokenMoveTimer); tokenMoveTimer=null; }
+  if(!pendingTokenMove) return;
+  socket.emit('token:move', pendingTokenMove);
+  pendingTokenMove=null;
+}
 function moveSelectedTokenFromEvent(e){
   const r=canvas.getBoundingClientRect();
   const w=screenToWorld(e.clientX-r.left, e.clientY-r.top);
@@ -863,7 +1079,7 @@ function moveSelectedTokenFromEvent(e){
   if(t.gx === c.gx && t.gy === c.gy) return true;
   t.gx=c.gx; t.gy=c.gy;
   captureCurrentScene();
-  socket.emit('token:move', { sceneId:currentSceneId, id:t.id, gx:t.gx, gy:t.gy });
+  queueTokenMove({ sceneId:currentSceneId, id:t.id, gx:t.gx, gy:t.gy });
   requestDraw();
   return true;
 }
@@ -876,7 +1092,9 @@ function drawFogOverlay(){
 
   // La nebbia viene disegnata come maschera nera opaca e poi resa trasparente solo alla fine.
   // Cosi rettangoli e pennello sovrapposti non creano strati sempre piu scuri.
-  const fogColor = '#000000';
+ const fogColor = fogState.color === 'white'
+    ? '#FFFFFF'
+    : '#000000';
 
   if(fogState.base === 'dark'){
     fogCtx.fillStyle = fogColor;
@@ -925,6 +1143,7 @@ function syncInputs(){
   $('gridOpacity').value = Math.round(grid.opacity*100);
   $('gridColor').value = grid.color;
   $('brush').value = Math.round(brush);
+  if($('fogColor')) $('fogColor').value = fogState.color || 'black';
   if($('drawSize')) $('drawSize').value = Math.round(drawSize);
   if($('drawSizeRange')) $('drawSizeRange').value = Math.round(drawSize);
 }
@@ -981,6 +1200,24 @@ function normalizedRect(a,b){
   const w=Math.abs(a.x-b.x), h=Math.abs(a.y-b.y);
   return {x,y,w,h};
 }
+function queueFogStroke(stroke){
+  fogState.strokes.push(stroke);
+  trimFogStore();
+  pendingFogStrokes.push(stroke);
+  requestDraw();
+  scheduleFogAppend();
+}
+function scheduleFogAppend(){
+  if(fogBatchTimer) return;
+  fogBatchTimer=setTimeout(flushFogAppend, 90);
+}
+function flushFogAppend(){
+  if(fogBatchTimer){ clearTimeout(fogBatchTimer); fogBatchTimer=null; }
+  if(!pendingFogStrokes.length) return;
+  const strokes=pendingFogStrokes.splice(0, pendingFogStrokes.length);
+  captureCurrentScene();
+  if(role === 'master' && currentRoom) socket.emit('fog:append', { sceneId:currentSceneId, strokes });
+}
 function addFogStroke(e){
   if(role !== 'master') return;
   const w=eventWorld(e);
@@ -990,9 +1227,7 @@ function addFogStroke(e){
     const dx=w.x-lastStroke.x, dy=w.y-lastStroke.y;
     if(Math.hypot(dx,dy) < Math.max(4, rad*.25)) return;
   }
-  fogState.strokes.push({kind:'circle', x:w.x,y:w.y,r:rad,op:'reveal'});
-  if(fogState.strokes.length > 5000) fogState.strokes.splice(0,1000);
-  requestDraw(); scheduleSend(false);
+  queueFogStroke({kind:'circle', x:w.x,y:w.y,r:rad,op:'reveal'});
 }
 function startFogRect(e){
   rectStart=eventWorld(e);
@@ -1007,10 +1242,16 @@ function updateFogRect(e){
 function finishFogRect(){
   if(!rectPreview) return;
   if(rectPreview.w > 1 && rectPreview.h > 1){
-    fogState.strokes.push({kind:'rect', x:rectPreview.x, y:rectPreview.y, w:rectPreview.w, h:rectPreview.h, op:'reveal'});
-    requestDraw(); scheduleSend(false);
+    queueFogStroke({kind:'rect', x:rectPreview.x, y:rectPreview.y, w:rectPreview.w, h:rectPreview.h, op:'reveal'});
+    flushFogAppend();
   }
   rectStart=null; rectPreview=null;
+}
+function commitFogGesture(){
+  if(role !== 'master' || fogGestureStartLen === null) return;
+  const added=fogState.strokes.slice(fogGestureStartLen);
+  if(added.length) pushHistoryRecord({type:'fogAppend', strokes:cloneJson(added)});
+  fogGestureStartLen=null;
 }
 
 let activePointers=new Map(), pinchStart=null;
@@ -1029,14 +1270,20 @@ canvas.addEventListener('pointerdown', e=>{
   activePointers.set(e.pointerId, pointerPos(e));
   if(activePointers.size===2){ dragging=false; draggingToken=false; rectStart=null; rectPreview=null; updatePinchStart(); return; }
   if(activePointers.size>1) return;
-  dragging=true; last={x:e.clientX,y:e.clientY}; dragSnapshot = role==='master' ? cloneCore() : null;
+  dragging=true; last={x:e.clientX,y:e.clientY}; dragSnapshot=null; fogGestureStartLen=null;
   const w=eventWorld(e);
   const hit=tokenAt(w.x,w.y);
-  if(hit && canMoveToken(hit)) { selectedTokenId=hit.id; draggingToken=true; moveSelectedTokenFromEvent(e); requestDraw(); return; }
+  if(hit && canMoveToken(hit)) { dragSnapshot = role==='master' ? cloneCore() : null; selectedTokenId=hit.id; draggingToken=true; moveSelectedTokenFromEvent(e); requestDraw(); return; }
   if(hit) { selectedTokenId=hit.id; requestDraw(); return; }
   selectedTokenId=null;
-  if(mode==='draw' && role==='master'){ startDrawing(e); }
-  else if(mode==='fog' && role==='master'){ if(fogTool==='rect') startFogRect(e); else addFogStroke(e); }
+  if(mode==='draw' && role==='master'){
+    startDrawing(e);
+  } else if(mode==='fog' && role==='master'){
+    fogGestureStartLen=fogState.strokes.length;
+    if(fogTool==='rect') startFogRect(e); else addFogStroke(e);
+  } else if((mode==='map' || mode==='grid') && role==='master'){
+    dragSnapshot=cloneCore();
+  }
   requestDraw();
 });
 canvas.addEventListener('pointermove', e=>{
@@ -1064,10 +1311,15 @@ function endPointer(e){
   activePointers.delete(e.pointerId);
   if(activePointers.size>=2){ updatePinchStart(); return; }
   if(dragging && role==='master' && mode==='draw') finishDrawing();
-  if(dragging && role==='master' && mode==='fog' && fogTool==='rect') finishFogRect();
-  if(dragging && (role==='master' || draggingToken) && !draggingToken) scheduleSend(false);
+  if(dragging && role==='master' && mode==='fog'){
+    if(fogTool==='rect') finishFogRect();
+    flushFogAppend();
+    commitFogGesture();
+  }
+  if(draggingToken) flushTokenMove();
+  if(dragging && role==='master' && !draggingToken && mode!=='draw' && mode!=='fog') scheduleSend(false);
   if(role==='master') commitHistory(dragSnapshot);
-  dragging=false; draggingToken=false; dragSnapshot=null; pinchStart=null;
+  dragging=false; draggingToken=false; dragSnapshot=null; pinchStart=null; fogGestureStartLen=null;
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
@@ -1149,6 +1401,7 @@ if($('applyTokenAsset')) $('applyTokenAsset').onclick=()=>markChange(()=>{
 
 
 $('gridColor').onchange=e=>markChange(()=>{ grid.color=e.target.value; requestDraw(); sendState(false); });
+$('fogColor').onchange=e=>markChange(()=>{ fogState.color=e.target.value; captureCurrentScene(); requestDraw(); sendState(false); });
 $('fogBrush').onclick=()=>{ fogTool='brush'; setMode('fog'); $('fogBrush').classList.add('on'); $('fogRect').classList.remove('on'); };
 $('fogRect').onclick=()=>{ fogTool='rect'; setMode('fog'); $('fogRect').classList.add('on'); $('fogBrush').classList.remove('on'); };
 $('fogAll').onclick=()=>markChange(()=>{ darkenAll(); requestDraw(); sendState(false); });
@@ -1167,12 +1420,13 @@ $('navUnlockBtn').onclick=()=>setMode('nav');
 
 function applyNumber(id){
   const v=+$(id).value;
-  if(id==='mapScale') map.scale=clamp(v,10,300)/100;
-  if(id==='gridSize') grid.size=clamp(v,2,1000);
-  if(id==='gridOpacity') grid.opacity=clamp(v,0,100)/100;
+  let shouldSync=false;
+  if(id==='mapScale'){ map.scale=clamp(v,10,300)/100; shouldSync=true; }
+  if(id==='gridSize'){ grid.size=clamp(v,2,1000); shouldSync=true; }
+  if(id==='gridOpacity'){ grid.opacity=clamp(v,0,100)/100; shouldSync=true; }
   if(id==='brush') brush=clamp(v,2,1000);
   if(id==='drawSize') drawSize=clamp(v,2,150);
-  syncInputs(); requestDraw(); if(role==='master') sendState(false);
+  syncInputs(); requestDraw(); if(role==='master' && shouldSync) sendState(false);
 }
 ['mapScale','gridSize','gridOpacity','brush','drawSize'].forEach(id=>$(id).addEventListener('change',()=>markChange(()=>applyNumber(id))));
 document.querySelectorAll('button[data-step]').forEach(btn=>btn.onclick=()=>{
@@ -1191,7 +1445,14 @@ document.querySelectorAll('button[data-set]').forEach(btn=>btn.onclick=()=>{
 if($('drawSizeRange')) $('drawSizeRange').addEventListener('input', e=>{ $('drawSize').value=e.target.value; applyNumber('drawSize'); });
 ['drawPen','drawRect','drawCircle','drawEraser'].forEach(id=>{ if($(id)) $(id).onclick=()=>{ drawTool={drawPen:'pen',drawRect:'rect',drawCircle:'circle',drawEraser:'eraser'}[id]; setMode('draw'); }; });
 document.querySelectorAll('.drawColorBtn').forEach(btn=>btn.onclick=()=>{ drawColor=btn.dataset.drawColor; setMode('draw'); });
-if($('clearDrawings')) $('clearDrawings').onclick=()=>markChange(()=>{ if(!drawings.length) return; if(!confirm('Cancellare tutti i disegni della scena?')) return; drawings=[]; captureCurrentScene(); requestDraw(); sendState(false); });
+if($('clearDrawings')) $('clearDrawings').onclick=()=>{
+  if(role !== 'master' || !drawings.length) return;
+  if(!confirm('Cancellare tutti i disegni della scena?')) return;
+  const before=cloneDrawings();
+  drawings=[]; markDrawingsDirty(); captureCurrentScene(); requestDraw();
+  pushHistoryRecord({type:'drawingsReplace', before, after:[]});
+  emitDrawingsClear();
+};
 
 
 if($('mapMode')) $('mapMode').onclick=()=>setMode('map');
@@ -1229,37 +1490,38 @@ if($('deleteScene')) $('deleteScene').onclick=()=>{
 if($('exportCampaign')) $('exportCampaign').onclick=exportCampaign;
 if($('importCampaign')) $('importCampaign').onchange=e=>{ const f=e.target.files[0]; if(f) importCampaignFile(f).catch(err=>alert('Errore import: '+err.message)); };
 
-function getState(includeImage=false){
+function getState(includeImage=false, includeDrawings=includeImage){
   captureCurrentScene();
   const sc=scenes[currentSceneId] || {id:currentSceneId, name:'Scena', imgSrc, map, grid, fogState, drawings, tokens};
   const scene={
     id:currentSceneId,
     name:sc.name || 'Scena',
-    imgSrc:includeImage ? (sc.imgSrc || imgSrc || null) : null,
     map,
     grid,
     fogState,
-    drawings,
     tokens
   };
-  return {
+  if(includeImage) scene.imgSrc = sc.imgSrc || imgSrc || null;
+  if(includeDrawings) scene.drawings = drawings;
+  const payload={
     type:'state',
     sender:role,
     currentSceneId,
     scene,
-    imgSrc:scene.imgSrc,
     map,
     grid,
     fogState,
-    drawings,
     tokens
   };
+  if(includeImage) payload.imgSrc = scene.imgSrc;
+  if(includeDrawings) payload.drawings = drawings;
+  return payload;
 }
 function sendState(includeImage=false){
   if(!currentRoom) return;
   if(role !== 'master' && role !== 'player') return;
   captureCurrentScene();
-  const state = role === 'player' ? {type:'state', sender:'player', currentSceneId, tokens} : getState(includeImage);
+  const state = role === 'player' ? {type:'state', sender:'player', currentSceneId, tokens} : getState(includeImage, includeImage);
   socket.emit('state:update', state);
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
@@ -1274,7 +1536,8 @@ function mergeIncomingSceneState(s){
   previous.imgSrc=incoming.imgSrc || s.imgSrc || previous.imgSrc || null;
   previous.map=incoming.map || s.map || previous.map || {x:100,y:80,scale:1,locked:false};
   previous.grid=incoming.grid || s.grid || previous.grid || {x:0,y:0,size:50,opacity:1,color:'rgba(0,0,0,1)',locked:false};
-  previous.fogState=incoming.fogState || s.fogState || previous.fogState || {base:'dark', strokes:[]};
+  previous.fogState=incoming.fogState || s.fogState || previous.fogState || {base:'dark', color:'black', strokes:[]};
+  previous.fogState.color ??= 'black';
   previous.drawings=Array.isArray(incoming.drawings) ? incoming.drawings : (Array.isArray(s.drawings) ? s.drawings : (previous.drawings || []));
   previous.tokens=Array.isArray(incoming.tokens) ? incoming.tokens : (Array.isArray(s.tokens) ? s.tokens : (previous.tokens || []));
   scenes[sid]=previous;
@@ -1311,6 +1574,44 @@ socket.on('connect', () => {
   }
 });
 socket.on('state:update', state => applyState(state));
+function ensureSceneForMessage(sceneId){
+  ensureScenes();
+  if(!scenes[sceneId]) scenes[sceneId]=defaultScene('Scena');
+  scenes[sceneId].id=sceneId;
+  return scenes[sceneId];
+}
+socket.on('drawing:add', data => {
+  if(!data || !data.drawing) return;
+  const sid=data.sceneId || currentSceneId;
+  const sc=ensureSceneForMessage(sid);
+  sc.drawings=Array.isArray(sc.drawings) ? sc.drawings : [];
+  if(!data.drawing.id || !sc.drawings.some(d=>d.id===data.drawing.id)) sc.drawings.push(data.drawing);
+  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
+});
+socket.on('drawings:replace', data => {
+  if(!data || !Array.isArray(data.drawings)) return;
+  const sid=data.sceneId || currentSceneId;
+  const sc=ensureSceneForMessage(sid);
+  sc.drawings=data.drawings;
+  if(sid===currentSceneId){ drawings=sc.drawings; trimDrawingStore(); markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
+});
+socket.on('drawings:clear', data => {
+  const sid=data?.sceneId || currentSceneId;
+  const sc=ensureSceneForMessage(sid);
+  sc.drawings=[];
+  if(sid===currentSceneId){ drawings=[]; markDrawingsDirty(); captureCurrentScene(); requestDraw(); }
+});
+socket.on('fog:append', data => {
+  if(!data || !Array.isArray(data.strokes)) return;
+  const sid=data.sceneId || currentSceneId;
+  const sc=ensureSceneForMessage(sid);
+  sc.fogState=sc.fogState || {base:'dark', color:'black', strokes:[]};
+  fogState.color ??= 'black';
+  sc.fogState.strokes=Array.isArray(sc.fogState.strokes) ? sc.fogState.strokes : [];
+  sc.fogState.strokes.push(...data.strokes);
+  if(sc.fogState.strokes.length > MAX_FOG_STROKES) sc.fogState.strokes.splice(0, sc.fogState.strokes.length - MAX_FOG_STROKES);
+  if(sid===currentSceneId){ fogState=sc.fogState; captureCurrentScene(); requestDraw(); }
+});
 socket.on('token:move', data => {
   if(!data || !data.id) return;
   const sid=data.sceneId || currentSceneId;
