@@ -396,6 +396,9 @@ let tokens=[];
 let selectedTokenId=null;
 let fogState={base:'dark', color:'black', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
 let syncTimer=null, rafPending=false;
+// Impedisce che uno stato completo del server, arrivato in ritardo,
+// sovrascriva modifiche locali gia eseguite dal Master.
+let masterStateAuthoritative=false;
 let history=[], historyIndex=-1, dragSnapshot=null;
 let drawingGestureSnapshot=null, drawingsDirtyDuringGesture=false;
 let fogGestureStartLen=null, pendingFogStrokes=[], fogBatchTimer=null;
@@ -596,7 +599,15 @@ function updateUndoRedo(){
   if(u) u.disabled = role !== 'master' || historyIndex < 0;
   if(r) r.disabled = role !== 'master' || historyIndex >= history.length-1;
 }
-function markChange(fn){ const before=cloneCore(); fn(); commitHistory(before); }
+function markMasterStateAuthoritative(){
+  if(role === 'master') masterStateAuthoritative=true;
+}
+function markChange(fn){
+  markMasterStateAuthoritative();
+  const before=cloneCore();
+  fn();
+  commitHistory(before);
+}
 
 function defaultScene(name='Scena 1'){
   return {
@@ -747,6 +758,7 @@ $('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); }
 
 function setRole(nextRole){
   role = nextRole;
+  if(role === 'master') masterStateAuthoritative=false;
   $('roleOverlay').style.display='none';
   if($('roleLabel')) $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
   $('roleLabelTop').textContent = role === 'master' ? 'Master' : 'Player';
@@ -954,6 +966,7 @@ function eraseDrawingAtPoint(p){
 }
 function startDrawing(e){
   if(role !== 'master') return;
+  markMasterStateAuthoritative();
   const p=eventWorld(e);
   drawingGestureSnapshot=null;
   drawingsDirtyDuringGesture=false;
@@ -1232,6 +1245,7 @@ function normalizedRect(a,b){
   return {x,y,w,h};
 }
 function queueFogStroke(stroke){
+  markMasterStateAuthoritative();
   fogState.strokes.push(stroke);
   trimFogStore();
   pendingFogStrokes.push(stroke);
@@ -1615,19 +1629,30 @@ function applyState(s){
   }
   if(s.sender === 'player') return;
   if(role !== 'master' && role !== 'player') return;
+
+  // Dopo il primo caricamento, il Master e' la fonte autorevole.
+  // Stati completi del server arrivati in ritardo non possono cancellare
+  // disegni, nebbia o altre modifiche gia presenti localmente.
+  if(role === 'master' && s.sender === 'server' && masterStateAuthoritative){
+    return;
+  }
+
   if(s.scenes){
     scenes=s.scenes;
     currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
     applyScene(currentSceneId);
+    if(role === 'master' && s.sender === 'server') masterStateAuthoritative=true;
     return;
   }
   mergeIncomingSceneState(s);
+  if(role === 'master' && s.sender === 'server') masterStateAuthoritative=true;
 }
 socket.on('connect', () => {
   setConnUi('online');
   if(currentRoom){
     socket.emit('room:join', currentRoom, () => {
-      requestSync();
+      if(role === 'master' && masterStateAuthoritative) sendState(true);
+      else requestSync();
     });
   }
 });
@@ -1658,7 +1683,8 @@ function setConnUi(status){
 function forceResyncIfNeeded(){
   if(!currentRoom) return;
   if(!socket.connected){ socket.connect(); return; }
-  requestSync();
+  if(role === 'master' && masterStateAuthoritative) sendState(true);
+  else requestSync();
   requestDraw();
 }
 document.addEventListener('visibilitychange', () => {

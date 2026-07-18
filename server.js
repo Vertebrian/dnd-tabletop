@@ -9,8 +9,13 @@ const io = new Server(server, {
   // Le mappe in base64 possono essere grandi, ma gli aggiornamenti frequenti
   // ora viaggiano come delta piccoli invece che come stato completo.
   maxHttpBufferSize: 20 * 1024 * 1024,
-  pingInterval: 25000,
-  pingTimeout: 60000,
+  // Timer di heartbeat: abbastanza stretti da rilevare una connessione
+  // morta in silenzio entro ~15-25s (invece che fino a 60s), ma non cosi'
+  // aggressivi da scambiare un normale rallentamento di rete per una
+  // disconnessione (cosa che causava falsi "server non risponde" al
+  // rientro in stanza).
+  pingInterval: 15000,
+  pingTimeout: 25000,
   cors: { origin: "*" }
 });
 
@@ -165,7 +170,7 @@ function makeDefaultScene() {
     imgSrc: null,
     map: { x: 100, y: 80, scale: 1, locked: false },
     grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
-    fogState: { base: "dark", color: "black", strokes: [] },
+    fogState: { base: "dark", strokes: [] },
     drawings: [],
     tokens: []
   };
@@ -347,8 +352,9 @@ io.on("connection", (socket) => {
     if (socket.data.room) socket.leave(socket.data.room);
     socket.data.room = room;
     socket.join(room);
-    getRoomState(room);
+    const state = getRoomState(room);
     console.log(`Client ${socket.id} entrato nella room ${room}`);
+    socket.emit("state:update", { type: "state", sender: "server", ...makeClientState(state, false) });
     if (typeof ack === "function") ack({ ok: true, room });
   });
 
