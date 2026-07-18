@@ -504,4 +504,24 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`D&D TableTop attivo su http://localhost:${PORT}`);
+  // Stampa gli IP di rete locale a cui gli altri dispositivi (sullo
+  // stesso WiFi/hotspot, anche senza internet) possono collegarsi.
+  try {
+    const os = require("os");
+    const nets = os.networkInterfaces();
+    const addrs = [];
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] || []) {
+        if (net.family === "IPv4" && !net.internal) addrs.push(net.address);
+      }
+    }
+    if (addrs.length) {
+      console.log("Indirizzi per gli altri dispositivi sulla stessa rete:");
+      addrs.forEach(a => console.log(`  -> http://${a}:${PORT}`));
+    } else {
+      console.log("Nessun indirizzo di rete locale trovato (sei connesso a un WiFi/hotspot?).");
+    }
+  } catch (e) {
+    console.log("Impossibile determinare l'IP locale:", e.message);
+  }
 });
