@@ -9,8 +9,14 @@ const io = new Server(server, {
   // Le mappe in base64 possono essere grandi, ma gli aggiornamenti frequenti
   // ora viaggiano come delta piccoli invece che come stato completo.
   maxHttpBufferSize: 20 * 1024 * 1024,
-  pingInterval: 25000,
-  pingTimeout: 60000,
+  // Timer di heartbeat piu' stretti: una connessione morta in silenzio
+  // (WiFi in risparmio energia, NAT/router che chiude socket idle, proxy
+  // di hosting che droppano websocket inattivi) viene rilevata entro
+  // ~8-12s invece che fino a 60s. Finche' non viene rilevata, i client
+  // sembrano "connessi" ma non ricevono nulla: e' la causa dei ritardi
+  // di sync di ~1 minuto lato player.
+  pingInterval: 8000,
+  pingTimeout: 12000,
   cors: { origin: "*" }
 });
 
@@ -109,7 +115,6 @@ function sanitizeFogState(fogState) {
   const fog = fogState && typeof fogState === "object" ? fogState : {};
   return {
     base: fog.base === "clear" ? "clear" : "dark",
-    color: fog.color === "white" ? "white" : "black",
     strokes: Array.isArray(fog.strokes)
       ? fog.strokes.slice(-MAX_FOG_STROKES).map(sanitizeFogStroke).filter(Boolean)
       : []
@@ -165,7 +170,7 @@ function makeDefaultScene() {
     imgSrc: null,
     map: { x: 100, y: 80, scale: 1, locked: false },
     grid: { x: 0, y: 0, size: 50, opacity: 1, color: "rgba(0,0,0,1)", locked: false },
-    fogState: { base: "dark", color: "black", strokes: [] },
+    fogState: { base: "dark", strokes: [] },
     drawings: [],
     tokens: []
   };

@@ -102,6 +102,8 @@
 </head>
 <body>
 
+<div id="connStatus" style="position:fixed;top:8px;right:8px;z-index:9999;background:rgba(0,0,0,.55);color:#fff;font:12px/1.4 system-ui,sans-serif;padding:4px 9px;border-radius:20px;pointer-events:none;">🟡 Connessione…</div>
+
 <div id="roomOverlay">
   <div id="roomBox">
     <span class="badge">D&D TableTop</span>
@@ -357,7 +359,18 @@ const drawingLayer = document.createElement('canvas');
 const drawingLayerCtx = drawingLayer.getContext('2d');
 // In locale/hotspot il WebSocket diretto evita il fallback polling, che sotto carico
 // puo' accumulare richieste HTTP e far sembrare tutto bloccato.
-const socket = io({ transports: ['websocket'], upgrade:false, reconnection:true, timeout:10000 });
+const socket = io({
+  // 'polling' come fallback: se il websocket muore in silenzio (WiFi in
+  // risparmio energia, NAT/router/proxy che chiudono connessioni idle),
+  // il polling permette di rilevarlo e riconnettersi molto piu' in fretta
+  // invece di restare "bloccati" su un websocket morto.
+  transports: ['websocket', 'polling'],
+  upgrade: true,
+  reconnection: true,
+  reconnectionDelay: 300,
+  reconnectionDelayMax: 2000,
+  timeout: 10000
+});
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
@@ -764,6 +777,8 @@ function draw(){
   if(img) ctx.drawImage(img, map.x, map.y, img.width*map.scale, img.height*map.scale);
   ctx.restore();
 
+  drawDrawings();
+
   ctx.save();
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
@@ -771,10 +786,7 @@ function draw(){
   drawTokens();
   ctx.restore();
 
-  // La nebbia deve coprire mappa, griglia e pedine, ma non i disegni del Master.
-  // In questo modo annotazioni e forme restano visibili anche al Player.
   drawFogOverlay();
-  drawDrawings();
 }
 
 function drawingCacheFingerprint(){
@@ -1568,13 +1580,40 @@ function applyState(s){
   mergeIncomingSceneState(s);
 }
 socket.on('connect', () => {
+  setConnUi('online');
   if(currentRoom){
     socket.emit('room:join', currentRoom, () => {
       requestSync();
     });
   }
 });
+socket.on('disconnect', () => setConnUi('offline'));
+socket.on('reconnect_attempt', () => setConnUi('reconnecting'));
 socket.on('state:update', state => applyState(state));
+
+function setConnUi(status){
+  const el=$('connStatus');
+  if(!el) return;
+  el.dataset.status=status;
+  el.textContent = status==='online' ? '🟢 Connesso' : status==='reconnecting' ? '🟡 Riconnessione…' : '🔴 Disconnesso';
+}
+
+// Fix ritardi di sync: quando il tab torna visibile/attivo forziamo un
+// controllo di connessione e un resync completo, invece di aspettare i
+// timer interni di Socket.IO (che nei tab in background vengono anch'essi
+// rallentati dal browser e possono impiegare fino a un minuto a reagire
+// a una connessione morta in silenzio).
+function forceResyncIfNeeded(){
+  if(!currentRoom) return;
+  if(!socket.connected){ socket.connect(); return; }
+  requestSync();
+  requestDraw();
+}
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible') forceResyncIfNeeded();
+});
+window.addEventListener('focus', forceResyncIfNeeded);
+window.addEventListener('online', forceResyncIfNeeded);
 function ensureSceneForMessage(sceneId){
   ensureScenes();
   if(!scenes[sceneId]) scenes[sceneId]=defaultScene('Scena');
