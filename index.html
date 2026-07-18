@@ -102,8 +102,6 @@
 </head>
 <body>
 
-<div id="connStatus" style="position:fixed;top:8px;right:8px;z-index:9999;background:rgba(0,0,0,.55);color:#fff;font:12px/1.4 system-ui,sans-serif;padding:4px 9px;border-radius:20px;pointer-events:none;">🟡 Connessione…</div>
-
 <div id="roomOverlay">
   <div id="roomBox">
     <span class="badge">D&D TableTop</span>
@@ -307,14 +305,11 @@
           <button id="applyTokenAsset" style="width:100%;margin-top:8px">Applica alla pedina selezionata</button>
         </div>
 
-     <div class="panelSection">
-  <label>Quantità pedine</label>
-  <input id="tokenQuantity" type="number" min="1" max="100" step="1" value="1">
-
-  <button id="addToken" style="width:100%;margin-top:8px">
-    Crea pedina/e
-  </button>
-</div>
+        <div class="panelSection">
+          <label>Quantità pedine</label>
+          <input id="tokenQuantity" type="number" min="1" max="100" step="1" value="1">
+          <button id="addToken" style="width:100%;margin-top:8px">Crea pedina/e</button>
+        </div>
         <button id="deleteToken" class="warn" style="width:100%;margin-top:8px">Elimina selezionata</button>
         <small>Le pedine si agganciano sempre al centro delle caselle.</small>
       </section>
@@ -364,18 +359,7 @@ const drawingLayer = document.createElement('canvas');
 const drawingLayerCtx = drawingLayer.getContext('2d');
 // In locale/hotspot il WebSocket diretto evita il fallback polling, che sotto carico
 // puo' accumulare richieste HTTP e far sembrare tutto bloccato.
-const socket = io({
-  // 'polling' come fallback: se il websocket muore in silenzio (WiFi in
-  // risparmio energia, NAT/router/proxy che chiudono connessioni idle),
-  // il polling permette di rilevarlo e riconnettersi molto piu' in fretta
-  // invece di restare "bloccati" su un websocket morto.
-  transports: ['websocket', 'polling'],
-  upgrade: true,
-  reconnection: true,
-  reconnectionDelay: 300,
-  reconnectionDelayMax: 2000,
-  timeout: 10000
-});
+const socket = io({ transports: ['websocket'], upgrade:false, reconnection:true, timeout:10000 });
 
 let W=0,H=0,dpr=1;
 let img=null, imgSrc=null, role=null, currentRoom=null;
@@ -393,6 +377,9 @@ let tokens=[];
 let selectedTokenId=null;
 let fogState={base:'dark', color:'black', strokes:[]}; // base: dark oppure clear. strokes: cerchi leggeri, non bitmap giganti.
 let syncTimer=null, rafPending=false;
+let initialStateLoaded=false;
+let localMasterRevision=0;
+let lastAcceptedServerRevision=0;
 let history=[], historyIndex=-1, dragSnapshot=null;
 let drawingGestureSnapshot=null, drawingsDirtyDuringGesture=false;
 let fogGestureStartLen=null, pendingFogStrokes=[], fogBatchTimer=null;
@@ -708,26 +695,17 @@ function enterRoomUi(room){
   if(role === 'player') requestSync();
   if(role === 'master') sendState(true);
 }
-function joinRoom(attempt = 1){
+function joinRoom(){
   const room = normalizeRoomName($('roomName').value);
   $('roomHint').textContent = 'Connessione alla stanza "' + room + '"...';
   if(!socket.connected){
     $('roomHint').textContent = 'Socket non ancora connesso, riprovo...';
-    socket.once('connect', () => joinRoom(attempt));
+    socket.once('connect', () => joinRoom());
     return;
   }
   socket.timeout(15000).emit('room:join', room, (err, res)=>{
     if(err){
-      // Un errore qui e' spesso solo un intoppo momentaneo (es. la
-      // connessione e' caduta un istante proprio mentre si tentava
-      // l'ingresso in stanza). Ritentiamo un paio di volte da soli
-      // prima di arrendersi, cosi' l'utente non deve ricaricare a mano.
-      if(attempt < 3){
-        $('roomHint').textContent = 'Connessione instabile, ritento (' + attempt + '/3)...';
-        setTimeout(() => joinRoom(attempt + 1), 800 * attempt);
-        return;
-      }
-      $('roomHint').textContent = 'Errore: server non risponde dopo 3 tentativi. Ricarica o controlla Render/log.';
+      $('roomHint').textContent = 'Errore: server non risponde. Ricarica o controlla Render/log.';
       return;
     }
     enterRoomUi(res?.room || room);
@@ -744,6 +722,7 @@ $('roomName').addEventListener('keydown', e=>{ if(e.key==='Enter') joinRoom(); }
 
 function setRole(nextRole){
   role = nextRole;
+  if(role === 'master' && !initialStateLoaded) localMasterRevision=0;
   $('roleOverlay').style.display='none';
   if($('roleLabel')) $('roleLabel').textContent = role === 'master' ? 'Master' : 'Player';
   $('roleLabelTop').textContent = role === 'master' ? 'Master' : 'Player';
@@ -791,8 +770,6 @@ function draw(){
   if(img) ctx.drawImage(img, map.x, map.y, img.width*map.scale, img.height*map.scale);
   ctx.restore();
 
-  drawDrawings();
-
   ctx.save();
   ctx.translate(view.x, view.y);
   ctx.scale(view.scale, view.scale);
@@ -800,7 +777,10 @@ function draw(){
   drawTokens();
   ctx.restore();
 
+  // La nebbia deve coprire mappa, griglia e pedine, ma non i disegni del Master.
+  // In questo modo annotazioni e forme restano visibili anche al Player.
   drawFogOverlay();
+  drawDrawings();
 }
 
 function drawingCacheFingerprint(){
@@ -951,6 +931,7 @@ function eraseDrawingAtPoint(p){
 }
 function startDrawing(e){
   if(role !== 'master') return;
+  localMasterRevision++;
   const p=eventWorld(e);
   drawingGestureSnapshot=null;
   drawingsDirtyDuringGesture=false;
@@ -1228,6 +1209,7 @@ function normalizedRect(a,b){
   return {x,y,w,h};
 }
 function queueFogStroke(stroke){
+  if(role === 'master') localMasterRevision++;
   fogState.strokes.push(stroke);
   trimFogStore();
   pendingFogStrokes.push(stroke);
@@ -1411,22 +1393,17 @@ $('addToken').onclick = () => markChange(() => {
   const type = $('tokenType').value;
   const tokenW = clamp(+$('tokenW').value || 1, 1, 20);
   const tokenH = clamp(+$('tokenH').value || 1, 1, 20);
-
   const center = screenToWorld(W / 2, H / 2);
   const startCell = worldToGridCell(center.x, center.y);
-
   const columns = Math.ceil(Math.sqrt(quantity));
   let lastCreatedId = null;
 
   for (let i = 0; i < quantity; i++) {
     const row = Math.floor(i / columns);
     const col = i % columns;
-
     const token = {
       id: 't' + Date.now() + '-' + i + '-' + Math.random().toString(16).slice(2),
-      label: quantity === 1
-        ? baseLabel
-        : `${baseLabel} ${i + 1}`,
+      label: quantity === 1 ? baseLabel : `${baseLabel} ${i + 1}`,
       type,
       w: tokenW,
       h: tokenH,
@@ -1435,13 +1412,11 @@ $('addToken').onclick = () => markChange(() => {
       icon: selectedTokenAsset?.icon || null,
       assetId: selectedTokenAsset?.id || null
     };
-
     tokens.push(token);
     lastCreatedId = token.id;
   }
 
   selectedTokenId = lastCreatedId;
-
   captureCurrentScene();
   requestDraw();
   sendState(false);
@@ -1589,7 +1564,10 @@ function sendState(includeImage=false){
   socket.emit('state:update', state);
 }
 function scheduleSend(includeImage=false){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>sendState(includeImage),120); }
-function requestSync(){ if(currentRoom) socket.emit('state:request', { full: role === 'master' }); }
+function requestSync(){
+  if(!currentRoom) return;
+  socket.emit('state:request', { full: role === 'master' });
+}
 function mergeIncomingSceneState(s){
   ensureScenes();
   const incoming=s.scene || s;
@@ -1610,6 +1588,7 @@ function mergeIncomingSceneState(s){
 }
 function applyState(s){
   if(!s) return;
+
   if(role === 'master' && s.sender === 'player'){
     const sid=s.currentSceneId || currentSceneId;
     if(Array.isArray(s.tokens)){
@@ -1620,59 +1599,42 @@ function applyState(s){
     requestDraw();
     return;
   }
+
   if(s.sender === 'player') return;
   if(role !== 'master' && role !== 'player') return;
+
+  // Il Master accetta lo stato completo del server solo al primo caricamento.
+  // Dopo quel momento il Master è la sorgente autorevole e gli snapshot tardivi
+  // non possono cancellare disegni o nebbia già presenti localmente.
+  if(role === 'master' && s.sender === 'server' && initialStateLoaded){
+    return;
+  }
+
   if(s.scenes){
     scenes=s.scenes;
     currentSceneId=s.currentSceneId || currentSceneId || Object.keys(scenes)[0];
     applyScene(currentSceneId);
-    return;
+  } else {
+    mergeIncomingSceneState(s);
   }
-  mergeIncomingSceneState(s);
+
+  if(role === 'master' && s.sender === 'server'){
+    initialStateLoaded=true;
+    lastAcceptedServerRevision=localMasterRevision;
+  }
 }
 socket.on('connect', () => {
-  setConnUi('online');
-  if(currentRoom){
-    socket.emit('room:join', currentRoom, () => {
-      requestSync();
-    });
-  }
-});
-socket.on('disconnect', (reason) => {
-  setConnUi('offline');
-  // Su una disconnessione "io server disconnect" (es. il server chiude
-  // esplicitamente il socket) Socket.IO NON riconnette da solo: va
-  // richiesto a mano, altrimenti il client resta bloccato disconnesso.
-  if(reason === 'io server disconnect'){
-    socket.connect();
-  }
-});
-socket.on('reconnect_attempt', () => setConnUi('reconnecting'));
-socket.on('state:update', state => applyState(state));
-
-function setConnUi(status){
-  const el=$('connStatus');
-  if(!el) return;
-  el.dataset.status=status;
-  el.textContent = status==='online' ? '🟢 Connesso' : status==='reconnecting' ? '🟡 Riconnessione…' : '🔴 Disconnesso';
-}
-
-// Fix ritardi di sync: quando il tab torna visibile/attivo forziamo un
-// controllo di connessione e un resync completo, invece di aspettare i
-// timer interni di Socket.IO (che nei tab in background vengono anch'essi
-// rallentati dal browser e possono impiegare fino a un minuto a reagire
-// a una connessione morta in silenzio).
-function forceResyncIfNeeded(){
   if(!currentRoom) return;
-  if(!socket.connected){ socket.connect(); return; }
-  requestSync();
-  requestDraw();
-}
-document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState === 'visible') forceResyncIfNeeded();
+  socket.emit('room:join', currentRoom, () => {
+    if(role === 'master' && initialStateLoaded){
+      // Dopo una riconnessione il Master ripubblica il proprio stato locale.
+      sendState(true);
+    } else {
+      requestSync();
+    }
+  });
 });
-window.addEventListener('focus', forceResyncIfNeeded);
-window.addEventListener('online', forceResyncIfNeeded);
+socket.on('state:update', state => applyState(state));
 function ensureSceneForMessage(sceneId){
   ensureScenes();
   if(!scenes[sceneId]) scenes[sceneId]=defaultScene('Scena');
